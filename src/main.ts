@@ -1,18 +1,48 @@
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, Tray } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  Menu,
+  nativeImage,
+  powerMonitor,
+  screen,
+  session,
+  shell,
+  Tray,
+} from 'electron';
 
-import { AppController, type Logger, type WindowPort } from './main/app-controller';
+import {
+  AppController,
+  type PowerMonitorPort,
+  type ProxyPort,
+  type WindowPort,
+} from './main/app-controller';
 import { registerConfigIpc, testTargetConnection } from './main/config/config-ipc';
 import { loadConfig, saveConfig } from './main/config/config-store';
-import { CONFIG_FILE_NAME } from './main/platform/config-paths';
-import { resolveConfigPaths, type ResolveConfigPathsOptions } from './main/platform/config-paths';
+import type { AppConfig } from './main/config/config-schema';
+import type { LogLevel, NetworkConfig } from './main/config/config-types';
+import { createLogger } from './main/logging/logger';
+import {
+  CONFIG_FILE_NAME,
+  resolveConfigPaths,
+  type NodePlatform,
+  type ResolveConfigPathsOptions,
+  type ResolvedConfigPaths,
+} from './main/platform/config-paths';
 import { detectPlatformCapabilities } from './main/platform/capability-detector';
+import { applyProxy } from './main/network/proxy-manager';
 import { acquireSingleInstance, LOGIN_LAUNCH_FLAG, type SingleInstancePort } from './main/instance/single-instance';
 import type { LoginItemPort } from './main/startup/startup-manager';
 import type { ShortcutTarget, TrayPort } from './main/tray/tray-manager';
+import {
+  WindowManager,
+  type BrowserWindowConstructorOptions,
+} from './main/window/window-manager';
 
 /**
  * Electron 主进程入口。
@@ -20,21 +50,16 @@ import type { ShortcutTarget, TrayPort } from './main/tray/tray-manager';
  * 规格 §4：启动 → 取单实例锁 → 识别来源 → 解析配置路径 → 读取校验 → 启动策略。
  * 单实例锁必须在 app ready 之前取得，因此这里的装配是同步的，启动流程交给 AppController。
  *
- * 窗口端口目前是 Task 3 的最小实现；Task 4 将以 `src/main/window/window-manager.ts`
- * 取代，并在此处改为注入 WindowManager。远程页面的加载、代理与重试由 Task 4/5 接入。
+ * 装配说明（Task 9 诊断接线 + 任务 4/5 模块接入）：
+ * - 窗口经 `WindowManager`（Task 4）创建，其事件出口接到控制器的 `reportWindowEvent`；
+ * - 主窗口的 `did-fail-load` / `did-navigate` 接到 `reportLoadFailure` / `reportLoadSuccess`，
+ *   由控制器持有的重试控制（Task 5）完成断网恢复；
+ * - 代理经默认 session 应用（Task 5 的 `applyProxy`）；电源事件经 `powerMonitor` 端口注入；
+ * - 日志使用 Task 9 的正式文件日志器；退出前由控制器刷新落盘。
  */
 
-const MAIN_WINDOW_WIDTH = 1280;
-const MAIN_WINDOW_HEIGHT = 800;
-const CONFIG_WINDOW_WIDTH = 960;
-const CONFIG_WINDOW_HEIGHT = 720;
-
-/** 远程页面与本地配置页面的共同安全边界（规格 §11）。 */
-const SECURE_WEB_PREFERENCES = {
-  nodeIntegration: false,
-  contextIsolation: true,
-  sandbox: true,
-} as const;
+/** 打包产物中本地离线页的位置（renderer 的 publicDir 会复制到 outDir 根）。 */
+const OFFLINE_PAGE_ENTRY = 'dist/renderer/config/offline.html';
 
 function isLocalDevelopmentUrl(value: string): boolean {
   try {
@@ -96,22 +121,45 @@ async function loadConfigWindow(window: BrowserWindow): Promise<void> {
   });
 }
 
-/**
- * Task 9 接入正式 logger 前的控制台日志出口（结构化事件 + 数据）。
- * `close` 为日志契约要求：主进程装配时改用 `src/main/logging/logger.ts`
- * 的 `createLogger`，并由控制器的关闭流程刷新落盘。
- */
-const consoleLogger: Logger = {
-  info: (event, data) => console.log(`[uni-shell] ${event}`, data ?? ''),
-  warn: (event, data) => console.warn(`[uni-shell] ${event}`, data ?? ''),
-  error: (event, data) => console.error(`[uni-shell] ${event}`, data ?? ''),
-  close: async () => {},
-};
+/** 规格 §7：断网时展示本地离线页；开发模式走开发服务器，生产加载打包产物。 */
+async function loadOfflinePage(window: BrowserWindow): Promise<void> {
+  const developmentUrl = process.env.ELECTRON_RENDERER_URL;
+  if (developmentUrl && isLocalDevelopmentUrl(developmentUrl)) {
+    await window.loadURL(new URL('offline.html', developmentUrl).toString());
+    return;
+  }
+  await window.loadFile(join(app.getAppPath(), OFFLINE_PAGE_ENTRY));
+}
 
-/** 主窗口就绪通道：快捷键宿主窗口在延迟结束后才创建，需要延后绑定。 */
+/**
+ * 预读配置的 `logging` 段，供 logger 在控制器构造前确定级别与保留天数。
+ *
+ * 只做只读解析：文件缺失、损坏或字段异常时返回空，由 logger 的规格默认值
+ * （info / 14 天）兜底；损坏文件的隔离由控制器的正式加载负责，不在这里重复处理。
+ */
+async function readLoggingPreferences(
+  paths: ResolvedConfigPaths,
+): Promise<{ level?: LogLevel; retentionDays?: number }> {
+  try {
+    const raw = await readFile(paths.configPath, 'utf8');
+    const parsed = JSON.parse(raw) as { logging?: { level?: unknown; retentionDays?: unknown } };
+    return {
+      level: typeof parsed.logging?.level === 'string' ? (parsed.logging.level as LogLevel) : undefined,
+      retentionDays: typeof parsed.logging?.retentionDays === 'number' ? parsed.logging.retentionDays : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 主窗口就绪通道：快捷键宿主窗口在延迟结束后才创建，需要延后绑定。
+ * 同一窗口只绑定一次，重建窗口（关闭后再次创建）时重新绑定。
+ */
 function createMainWindowChannel() {
   const handlers: Array<(window: BrowserWindow) => void> = [];
   let current: BrowserWindow | null = null;
+  let bound: BrowserWindow | null = null;
 
   return {
     get window() {
@@ -123,10 +171,15 @@ function createMainWindowChannel() {
     onReady(handler: (window: BrowserWindow) => void) {
       handlers.push(handler);
       // 窗口已存在时立即绑定，避免安装快捷键时窗口尚未创建。
-      if (current && !current.isDestroyed()) handler(current);
+      if (current && !current.isDestroyed() && bound !== current) {
+        bound = current;
+        handler(current);
+      }
     },
     emitReady(window: BrowserWindow) {
       current = window;
+      if (bound === window) return;
+      bound = window;
       for (const handler of handlers) handler(window);
     },
   };
@@ -158,7 +211,9 @@ function createElectronTrayPort(): TrayPort {
           { label: '重新加载网页', click: () => void actions.reload() },
           { label: '立即显示窗口', click: () => void actions.showWindow() },
           { type: 'separator' },
-          { label: '退出程序', click: () => void actions.quit() },
+          // 「退出程序」= 控制器的关闭流程（刷新日志、停定时器）+ 进程退出；
+          // 控制器的 quit 动作由 quitApplication 内部触发。
+          { label: '退出程序', click: () => void quitApplication() },
         ]);
         tray.setContextMenu(menu);
 
@@ -271,98 +326,123 @@ function createShortcutTarget(): ShortcutTarget {
   };
 }
 
-function createWindowPort(): WindowPort & { closeStaleWindows(): void } {
-  let mainWindow: BrowserWindow | null = null;
-  let configWindow: BrowserWindow | null = null;
+/** 窗口工厂：把窗口层的中立选项映射为 Electron 的构造选项。 */
+function createBrowserWindow(options: BrowserWindowConstructorOptions): BrowserWindow {
+  return new BrowserWindow(options as unknown as Electron.BrowserWindowConstructorOptions);
+}
 
-  const isAlive = (window: BrowserWindow | null): window is BrowserWindow =>
-    window !== null && !window.isDestroyed();
+/**
+ * 主窗口加载诊断（规格 §12 的页面加载结果、§14.1 的断网恢复）：
+ * - `did-fail-load` 进入控制器的失败分类与重试控制；
+ * - `did-navigate` 在主框架导航成功时触发且带 URL，本地离线页（file://）不算恢复。
+ */
+function attachMainWindowDiagnostics(window: BrowserWindow): void {
+  window.webContents.on(
+    'did-fail-load',
+    (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+      activeController?.reportLoadFailure({ errorCode, errorDescription, isMainFrame });
+    },
+  );
+  window.webContents.on('did-navigate', (_event, url) => {
+    if (url.startsWith('file:')) return;
+    activeController?.reportLoadSuccess();
+  });
+}
 
-  const createMainWindow = async (): Promise<void> => {
-    if (isAlive(mainWindow)) {
-      mainWindow.show();
-      mainWindow.focus();
-      return;
-    }
+/**
+ * 把 WindowManager 适配到控制器的 WindowPort。
+ * 记住最近一次配置：托盘「重新加载网页」与唤醒恢复都要重新加载目标网址，
+ * 离线页展示后更不能重载离线页本身。
+ */
+function createWindowPortAdapter(windowManager: WindowManager<BrowserWindow>): WindowPort & {
+  closeStaleWindows(): void;
+} {
+  let lastConfig: AppConfig | undefined;
 
-    mainWindow = new BrowserWindow({
-      width: MAIN_WINDOW_WIDTH,
-      height: MAIN_WINDOW_HEIGHT,
-      show: true,
-      webPreferences: SECURE_WEB_PREFERENCES,
-    });
-    mainWindow.on('closed', () => {
-      mainWindow = null;
-      mainWindowChannel.set(null);
-    });
-
-    mainWindowChannel.emitReady(mainWindow);
-
-    // 目标网址由 Task 4/5 的窗口与网络层注入；此处先展示本地配置界面占位。
-    await loadConfigWindow(mainWindow);
+  const createMain = async (config: AppConfig): Promise<void> => {
+    lastConfig = config;
+    await windowManager.createMainWindow(config);
   };
 
   return {
     async openConfigWindow() {
-      if (isAlive(configWindow)) {
-        configWindow.focus();
-        return;
-      }
-
-      configWindow = new BrowserWindow({
-        width: CONFIG_WINDOW_WIDTH,
-        height: CONFIG_WINDOW_HEIGHT,
-        show: true,
-        webPreferences: {
-          ...SECURE_WEB_PREFERENCES,
-          // 仅本地配置窗口加载最小 preload；远程业务窗口不加载（rules/security.md）。
-          preload: preloadPath(),
-        },
-      });
-      configWindow.on('closed', () => {
-        configWindow = null;
-      });
-
-      await loadConfigWindow(configWindow);
+      windowManager.openConfigWindow();
     },
 
-    createMainWindow,
-
-    async reloadMain() {
-      if (!isAlive(mainWindow)) {
-        await createMainWindow();
-        return;
-      }
-      mainWindow.webContents.reload();
-    },
+    createMainWindow: createMain,
 
     async showAndFocusMain() {
-      if (!isAlive(mainWindow)) {
-        await createMainWindow();
-        return;
+      // 窗口已被销毁（如关闭后再次唤醒）时按最近配置重建。
+      if (!windowManager.showMainWindow() && lastConfig !== undefined) {
+        await createMain(lastConfig);
       }
-      mainWindow.show();
-      mainWindow.focus();
     },
 
     async hideMain() {
-      if (isAlive(mainWindow)) mainWindow.hide();
+      windowManager.getMainWindow()?.hide();
     },
 
-    isMainWindowVisible: () => isAlive(mainWindow) && mainWindow.isVisible(),
-    isConfigWindowOpen: () => isAlive(configWindow),
+    async reloadMain() {
+      const main = windowManager.getMainWindow();
+      // 主窗口只可能由 createMainWindow 创建，因此窗口存在即有最近配置；
+      // 离线页展示后必须重新加载目标网址，而不是重载离线页本身。
+      if (main !== null && lastConfig !== undefined) {
+        await main.loadURL(lastConfig.targetUrl);
+        return;
+      }
+      if (lastConfig !== undefined) await createMain(lastConfig);
+    },
+
+    async showOfflinePage() {
+      const main = windowManager.getMainWindow();
+      if (main !== null) await loadOfflinePage(main);
+    },
+
+    isMainWindowVisible: () => windowManager.getMainWindow()?.isVisible() ?? false,
+    isConfigWindowOpen: () => windowManager.getConfigWindow() !== null,
     focusConfigWindow() {
-      if (isAlive(configWindow)) {
-        configWindow.show();
-        configWindow.focus();
+      const config = windowManager.getConfigWindow();
+      if (config !== null) {
+        config.show();
+        config.focus();
       }
     },
     /** 受控重启前关闭陈旧窗口；与 app.relaunch()/app.exit() 配合使用。 */
     closeStaleWindows() {
-      if (isAlive(configWindow)) configWindow.close();
-      if (isAlive(mainWindow)) mainWindow.close();
+      windowManager.closeAll();
     },
   };
+}
+
+/** 代理端口：目标页面加载前经默认 session 应用代理（规格 §7）。 */
+function createElectronProxyPort(): ProxyPort {
+  return {
+    apply: (config: NetworkConfig) => applyProxy(session.defaultSession, config),
+  };
+}
+
+/** 电源端口：记录休眠/唤醒诊断，并在唤醒后由控制器重载目标页面（规格 §14.1）。 */
+function createElectronPowerMonitorPort(): PowerMonitorPort {
+  return {
+    onSuspend: (handler) => {
+      powerMonitor.on('suspend', handler);
+    },
+    onResume: (handler) => {
+      powerMonitor.on('resume', handler);
+    },
+    removeAllListeners: () => {
+      powerMonitor.removeAllListeners();
+    },
+  };
+}
+
+/** 统一退出：先刷新日志并释放资源，再退出进程。 */
+async function quitApplication(): Promise<void> {
+  try {
+    await activeController?.shutdown();
+  } finally {
+    app.exit();
+  }
 }
 
 async function bootstrap(): Promise<void> {
@@ -372,20 +452,75 @@ async function bootstrap(): Promise<void> {
     displays: { count: screen.getAllDisplays().length },
   });
 
-  const windowPort = createWindowPort();
+  const resolvePaths = (options: ResolveConfigPathsOptions): ResolvedConfigPaths =>
+    resolveConfigPaths({
+      ...options,
+      macAppBundlePath: macPortableExecutablePath(),
+    });
+
+  const paths = resolvePaths({
+    platform: process.platform as NodePlatform,
+    argv: process.argv,
+    env: process.env as Record<string, string | undefined>,
+    executablePath: process.execPath,
+  });
+
+  // 正式文件日志器（Task 9）：级别与保留天数取配置 logging 段，读不到用规格默认值。
+  const loggingPreferences = await readLoggingPreferences(paths);
+  const logger = createLogger({
+    platform: process.platform as NodePlatform,
+    env: process.env as Record<string, string | undefined>,
+    level: loggingPreferences.level,
+    retentionDays: loggingPreferences.retentionDays,
+    context: {
+      appVersion: app.getVersion(),
+      electronVersion: process.versions.electron ?? '',
+      arch: process.arch,
+      desktopEnvironment: capabilities.desktopEnvironment,
+      sessionType: capabilities.sessionType,
+    },
+    onError: (error, event) => {
+      // 日志不可用时在控制台留下最后线索，不影响主流程。
+      console.error(`[uni-shell] 日志写入失败（${event}）`, error);
+    },
+  });
+
+  const windowManager = new WindowManager({
+    createWindow: createBrowserWindow,
+    capabilities,
+    screen,
+    preloadPath: preloadPath(),
+    loadConfigWindow: (window) => loadConfigWindow(window),
+    openExternal: (url) => shell.openExternal(url),
+    quitApp: () => {
+      void quitApplication();
+    },
+    onEvent: (event) => {
+      activeController?.reportWindowEvent(event);
+      if (event.type === 'main-window-created') {
+        const main = windowManager.getMainWindow();
+        if (main !== null) {
+          mainWindowChannel.emitReady(main);
+          main.on('closed', () => mainWindowChannel.set(null));
+          attachMainWindowDiagnostics(main);
+        }
+      }
+    },
+  });
+
+  const windowPort = createWindowPortAdapter(windowManager);
 
   const controller = new AppController({
-    resolvePaths: (options: ResolveConfigPathsOptions) =>
-      resolveConfigPaths({
-        ...options,
-        macAppBundlePath: macPortableExecutablePath(),
-      }),
-    loadConfig: (paths) => loadConfig({ paths }),
+    resolvePaths,
+    loadConfig: (resolved) => loadConfig({ paths: resolved }),
     capabilities,
     window: windowPort,
     tray: createElectronTrayPort(),
     loginItem: createElectronLoginItemPort(),
     shortcutTarget: createShortcutTarget(),
+    proxy: createElectronProxyPort(),
+    powerMonitor: createElectronPowerMonitorPort(),
+    log: logger,
   });
 
   activeController = controller;
@@ -394,9 +529,9 @@ async function bootstrap(): Promise<void> {
   registerConfigIpc({
     host: ipcMain,
     paths: () => activeController?.configPaths,
-    loadConfig: (paths) => loadConfig({ paths }),
+    loadConfig: (resolved) => loadConfig({ paths: resolved }),
     saveConfig: (config, options) => saveConfig(config, options),
-    logger: consoleLogger,
+    logger,
     onSaved: async (config, previous) => {
       // 规格 §9：开机自启变化立即同步登录项；只有用户显式改过才写。
       if (previous !== undefined && config.startup.openAtLogin !== previous.startup.openAtLogin) {
@@ -407,9 +542,16 @@ async function bootstrap(): Promise<void> {
       windowPort.closeStaleWindows();
     },
     // 规格 §14.1：仅在写入成功后由 config-ipc 调用；先关窗再 relaunch，避免半截状态。
+    // 重启前先走一遍关闭流程：配置保存结果是规格 §12 的必记项，不能随进程退出丢失。
     restart: () => {
-      app.relaunch();
-      app.exit();
+      void (async () => {
+        try {
+          await controller.shutdown();
+        } finally {
+          app.relaunch();
+          app.exit();
+        }
+      })();
     },
     testConnection: (url, network) => testTargetConnection(url, network),
   });
@@ -421,6 +563,8 @@ async function bootstrap(): Promise<void> {
   });
 
   app.on('before-quit', () => {
+    // 规格 §8：close-to-hide 会阻止退出；关闭流程开始后放行。
+    windowManager.beginShutdown();
     void controller.shutdown();
   });
 }
