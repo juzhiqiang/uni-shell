@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "targetUrl": "https://example.com",
+  "window": {
+    "mode": "fullscreen",
+    "alwaysOnTop": false,
+    "alwaysOnTopLevel": "normal",
+    "display": "primary",
+    "closeAction": "hide"
+  },
+  "network": {
+    "proxyMode": "direct",
+    "proxyServer": "",
+    "proxyBypass": "",
+    "retryIntervalSec": 3,
+    "requestTimeoutSec": 20,
+    "offlinePageEnabled": true
+  },
+  "startup": {
+    "openAtLogin": false,
+    "initialState": "tray",
+    "delaySec": 0,
+    "delayOnlyOnLogin": false,
+    "showAfterDelay": true
+  },
+  "maintenance": {
+    "hotkeyEnabled": true,
+    "hotkey": "Ctrl+Alt+Shift+F12",
+    "trayConfigEnabled": true
+  },
+  "security": {
+    "allowedOrigins": [],
+    "allowExternalLinks": false,
+    "allowPopups": false,
+    "allowDownloads": false
+  },
+  "logging": {
+    "level": "info",
+    "retentionDays": 14
+  }
+}
