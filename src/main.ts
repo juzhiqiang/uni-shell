@@ -2,10 +2,11 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { app, BrowserWindow, Menu, nativeImage, screen, Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, Tray } from 'electron';
 
-import { AppController, type WindowPort } from './main/app-controller';
-import { loadConfig } from './main/config/config-store';
+import { AppController, type Logger, type WindowPort } from './main/app-controller';
+import { registerConfigIpc, testTargetConnection } from './main/config/config-ipc';
+import { loadConfig, saveConfig } from './main/config/config-store';
 import { CONFIG_FILE_NAME } from './main/platform/config-paths';
 import { resolveConfigPaths, type ResolveConfigPathsOptions } from './main/platform/config-paths';
 import { detectPlatformCapabilities } from './main/platform/capability-detector';
@@ -64,15 +65,43 @@ function macPortableExecutablePath(): string | undefined {
   return existsSync(join(resolve(executablePath, '..'), CONFIG_FILE_NAME)) ? executablePath : undefined;
 }
 
-/** 加载本地配置界面；开发模式下走 Vite dev server。 */
+/**
+ * 配置窗口 preload 产物路径。
+ *
+ * 与 `vite.config.ts` 的 preload 构建条目（`dist/preload/index.cjs`，CJS）一致；
+ * 开发模式由 electron-vite 预构建到同一位置。延迟求值：`app.getAppPath()`
+ * 在 app ready 之前调用不稳定。
+ */
+function preloadPath(): string {
+  return join(app.getAppPath(), 'dist/preload/index.cjs');
+}
+
+/** 展示给配置界面的实际写入路径（规格 §5.1）。 */
+function currentConfigPath(): string {
+  const paths = activeController?.configPaths;
+  return paths?.writePath ?? paths?.configPath ?? '';
+}
+
+/** 加载本地配置界面；开发模式下走 Vite dev server，两种模式都附带实际配置路径。 */
 async function loadConfigWindow(window: BrowserWindow): Promise<void> {
   const developmentUrl = process.env.ELECTRON_RENDERER_URL;
   if (developmentUrl && isLocalDevelopmentUrl(developmentUrl)) {
-    await window.loadURL(developmentUrl);
+    const url = new URL(developmentUrl);
+    url.searchParams.set('configPath', currentConfigPath());
+    await window.loadURL(url.toString());
     return;
   }
-  await window.loadFile(join(app.getAppPath(), 'dist/renderer/config/index.html'));
+  await window.loadFile(join(app.getAppPath(), 'dist/renderer/config/index.html'), {
+    query: { configPath: currentConfigPath() },
+  });
 }
+
+/** Task 9 接入正式 logger 前的控制台日志出口（结构化事件 + 数据）。 */
+const consoleLogger: Logger = {
+  info: (event, data) => console.log(`[uni-shell] ${event}`, data ?? ''),
+  warn: (event, data) => console.warn(`[uni-shell] ${event}`, data ?? ''),
+  error: (event, data) => console.error(`[uni-shell] ${event}`, data ?? ''),
+};
 
 /** 主窗口就绪通道：快捷键宿主窗口在延迟结束后才创建，需要延后绑定。 */
 function createMainWindowChannel() {
@@ -237,7 +266,7 @@ function createShortcutTarget(): ShortcutTarget {
   };
 }
 
-function createWindowPort(): WindowPort {
+function createWindowPort(): WindowPort & { closeStaleWindows(): void } {
   let mainWindow: BrowserWindow | null = null;
   let configWindow: BrowserWindow | null = null;
 
@@ -279,7 +308,11 @@ function createWindowPort(): WindowPort {
         width: CONFIG_WINDOW_WIDTH,
         height: CONFIG_WINDOW_HEIGHT,
         show: true,
-        webPreferences: SECURE_WEB_PREFERENCES,
+        webPreferences: {
+          ...SECURE_WEB_PREFERENCES,
+          // 仅本地配置窗口加载最小 preload；远程业务窗口不加载（rules/security.md）。
+          preload: preloadPath(),
+        },
       });
       configWindow.on('closed', () => {
         configWindow = null;
@@ -319,6 +352,11 @@ function createWindowPort(): WindowPort {
         configWindow.focus();
       }
     },
+    /** 受控重启前关闭陈旧窗口；与 app.relaunch()/app.exit() 配合使用。 */
+    closeStaleWindows() {
+      if (isAlive(configWindow)) configWindow.close();
+      if (isAlive(mainWindow)) mainWindow.close();
+    },
   };
 }
 
@@ -346,6 +384,30 @@ async function bootstrap(): Promise<void> {
   });
 
   activeController = controller;
+
+  // 配置界面 IPC：启动流程解析出配置路径后，才注册五个白名单通道（Task 8）。
+  registerConfigIpc({
+    host: ipcMain,
+    paths: () => activeController?.configPaths,
+    loadConfig: (paths) => loadConfig({ paths }),
+    saveConfig: (config, options) => saveConfig(config, options),
+    logger: consoleLogger,
+    onSaved: async (config, previous) => {
+      // 规格 §9：开机自启变化立即同步登录项；只有用户显式改过才写。
+      if (previous !== undefined && config.startup.openAtLogin !== previous.startup.openAtLogin) {
+        await activeController?.applyOpenAtLogin(config.startup.openAtLogin);
+      }
+    },
+    closeStaleWindows: () => {
+      windowPort.closeStaleWindows();
+    },
+    // 规格 §14.1：仅在写入成功后由 config-ipc 调用；先关窗再 relaunch，避免半截状态。
+    restart: () => {
+      app.relaunch();
+      app.exit();
+    },
+    testConnection: (url, network) => testTargetConnection(url, network),
+  });
 
   await controller.start({
     argv: process.argv,

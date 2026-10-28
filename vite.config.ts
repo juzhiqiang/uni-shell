@@ -14,6 +14,17 @@ export default defineConfig({
       },
     },
   },
+  // 本地配置窗口的最小 preload：只暴露五个具名 IPC 方法（rules/security.md）。
+  // 沙箱 preload 必须是 CJS；产物路径与主进程 `preloadPath()` 约定一致。
+  preload: {
+    build: {
+      outDir: resolve(root, 'dist/preload'),
+      rollupOptions: {
+        input: resolve(root, 'src/preload/config-preload.ts'),
+        output: { format: 'cjs', entryFileNames: 'index.cjs' },
+      },
+    },
+  },
   renderer: {
     root: resolve(root, 'src/renderer/config'),
     publicDir: resolve(root, 'src/renderer/offline'),
