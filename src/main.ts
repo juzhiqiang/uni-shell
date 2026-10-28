@@ -96,11 +96,16 @@ async function loadConfigWindow(window: BrowserWindow): Promise<void> {
   });
 }
 
-/** Task 9 接入正式 logger 前的控制台日志出口（结构化事件 + 数据）。 */
+/**
+ * Task 9 接入正式 logger 前的控制台日志出口（结构化事件 + 数据）。
+ * `close` 为日志契约要求：主进程装配时改用 `src/main/logging/logger.ts`
+ * 的 `createLogger`，并由控制器的关闭流程刷新落盘。
+ */
 const consoleLogger: Logger = {
   info: (event, data) => console.log(`[uni-shell] ${event}`, data ?? ''),
   warn: (event, data) => console.warn(`[uni-shell] ${event}`, data ?? ''),
   error: (event, data) => console.error(`[uni-shell] ${event}`, data ?? ''),
+  close: async () => {},
 };
 
 /** 主窗口就绪通道：快捷键宿主窗口在延迟结束后才创建，需要延后绑定。 */

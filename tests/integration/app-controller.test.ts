@@ -175,6 +175,7 @@ function createDeps(overrides: Partial<AppControllerDeps> = {}) {
       info: (event) => logs.push({ level: 'info', event }),
       warn: (event) => logs.push({ level: 'warn', event }),
       error: (event) => logs.push({ level: 'error', event }),
+      close: async () => {},
     },
     ...overrides,
   };

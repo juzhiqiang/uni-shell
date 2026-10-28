@@ -115,14 +115,19 @@ interface Harness {
   handlers: Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>;
   files: Map<string, string>;
   calls: string[];
-  logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+  logger: {
+    info: ReturnType<typeof vi.fn>;
+    warn: ReturnType<typeof vi.fn>;
+    error: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
+  };
 }
 
 function createHarness(options: { initial?: Record<string, string>; overrides?: Partial<ConfigIpcDeps> } = {}): Harness {
   const { host, handlers } = createHost();
   const memory = createMemoryFs(options.initial);
   const calls: string[] = [];
-  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), close: vi.fn(async () => {}) };
 
   const deps: ConfigIpcDeps = {
     host,

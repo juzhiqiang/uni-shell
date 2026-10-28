@@ -9,8 +9,13 @@ const dnsErrorCodes = new Set([-105, -137, -800, -801, -802, -803, -804, -805, -
 const connectionErrorCodes = new Set([-101, -102, -103, -104, -106, -109, -111, -118]);
 const tlsErrorCodes = new Set([-107, -110, -113, -115, -117]);
 
-/** Maps Chromium net error codes to operational categories for logging and recovery. */
-export function classifyLoadFailure(details: Electron.DidFailLoadEvent & { httpResponseCode?: number }): LoadFailureKind {
+/**
+ * Maps Chromium net error codes to operational categories for logging and recovery.
+ *
+ * 入参收敛到 `LoadFailureDetails`：分类只读取 errorCode / httpResponseCode，
+ * 调用方（如 Task 9 的诊断编排）无需构造完整的 `DidFailLoadEvent`。
+ */
+export function classifyLoadFailure(details: LoadFailureDetails): LoadFailureKind {
   if (details.httpResponseCode !== undefined && details.httpResponseCode >= 400) return 'http';
   const { errorCode } = details;
   if (dnsErrorCodes.has(errorCode)) return 'dns';
