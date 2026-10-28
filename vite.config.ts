@@ -16,6 +16,7 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(root, 'src/renderer/config'),
+    publicDir: resolve(root, 'src/renderer/offline'),
     plugins: [react()],
     build: {
       outDir: resolve(root, 'dist/renderer/config'),

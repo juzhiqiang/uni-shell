@@ -80,7 +80,16 @@ describe('config schema', () => {
     for (const [path, allowed, rejected] of cases) {
       it(`${path} 接受合法值`, () => {
         for (const value of allowed) {
-          const result = validateConfig(buildConfigWith(path, value));
+          const config = buildConfigWith(path, value);
+          if (path === 'network.proxyMode' && value === 'fixed') {
+            const network = config.network as Record<string, unknown>;
+            network.proxyServer = 'proxy.example.com:8080';
+          }
+          if (path === 'network.proxyMode' && value === 'pac') {
+            const network = config.network as Record<string, unknown>;
+            network.proxyServer = 'https://proxy.example.com/proxy.pac';
+          }
+          const result = validateConfig(config);
           expect(result.ok, `${path}=${value} 应当被接受`).toBe(true);
         }
       });
@@ -326,6 +335,72 @@ describe('config schema', () => {
       for (const value of ['', '   ', 12, null]) {
         const result = validateConfig(buildConfigWith('maintenance.hotkey', value));
         expect(result.ok, `hotkey=${JSON.stringify(value)} 应当被拒绝`).toBe(false);
+      }
+    });
+  });
+
+  describe('network proxy credentials', () => {
+    it('rejects proxy credentials in config regardless of the selected mode', () => {
+      for (const proxyMode of ['direct', 'system', 'fixed', 'pac']) {
+        const result = validateConfig({
+          ...createDefaultConfig('https://example.com'),
+          network: { proxyMode, proxyServer: 'http://operator:secret@proxy.example.com:8080' },
+        });
+
+        expect(result.ok, `${proxyMode} 模式不应持久化代理凭据`).toBe(false);
+        if (!result.ok) {
+          expect(result.issues.some((issue) => issue.path === 'network.proxyServer')).toBe(true);
+        }
+      }
+    });
+
+    it('rejects credentials in a malformed proxy URL instead of persisting it', () => {
+      const result = validateConfig({
+        ...createDefaultConfig('https://example.com'),
+        network: { proxyMode: 'direct', proxyServer: 'http://operator:secret@' },
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.issues.some((issue) => issue.path === 'network.proxyServer')).toBe(true);
+      }
+    });
+
+    it('rejects credentials in a PAC URL even when its query contains equals signs', () => {
+      const result = validateConfig({
+        ...createDefaultConfig('https://example.com'),
+        network: {
+          proxyMode: 'pac',
+          proxyServer: 'https://operator:secret@proxy.example.com/proxy.pac?token=a=b',
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.issues.some((issue) => issue.path === 'network.proxyServer')).toBe(true);
+      }
+    });
+
+    it('requires a server value for fixed and PAC proxy modes', () => {
+      for (const proxyMode of ['fixed', 'pac']) {
+        const result = validateConfig({
+          ...createDefaultConfig('https://example.com'),
+          network: { proxyMode, proxyServer: '' },
+        });
+
+        expect(result.ok, `${proxyMode} 模式应要求 proxyServer`).toBe(false);
+      }
+    });
+
+    it('rejects a non-HTTP PAC address before saving', () => {
+      const result = validateConfig({
+        ...createDefaultConfig('https://example.com'),
+        network: { proxyMode: 'pac', proxyServer: 'file:///proxy.pac' },
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.issues.some((issue) => issue.path === 'network.proxyServer')).toBe(true);
       }
     });
   });

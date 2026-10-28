@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>网络连接中断</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+        background: #f4f6f5;
+        color: #202a26;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+      }
+
+      main {
+        width: min(32rem, calc(100% - 3rem));
+        padding: 2rem 0;
+      }
+
+      h1 {
+        margin: 0 0 0.75rem;
+        font-size: 1.5rem;
+        font-weight: 600;
+      }
+
+      p {
+        margin: 0;
+        color: #52615a;
+        line-height: 1.7;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          background: #1d2421;
+          color: #edf3ef;
+        }
+
+        p {
+          color: #bac7bf;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>当前离线：网络连接中断</h1>
+      <p>当前无法连接到业务系统，客户端正在自动重试。连接恢复后页面会自动重新加载。</p>
+    </main>
+  </body>
+</html>

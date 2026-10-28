@@ -80,6 +80,32 @@ const positiveIntSchema = z.int().min(1, '必须是大于 0 的整数');
 /** 去除首尾空白后仍须非空，避免空白字符串被当成有效值。 */
 const nonEmptyStringSchema = z.string().trim().min(1, '不能为空');
 
+function proxyServerContainsCredentials(value: string): boolean {
+  const endpoints = value.split(';').flatMap((group) => {
+    const routeSeparator = group.indexOf('=');
+    const urlSchemeSeparator = group.indexOf('://');
+    const separator =
+      routeSeparator !== -1 && (urlSchemeSeparator === -1 || routeSeparator < urlSchemeSeparator)
+        ? routeSeparator
+        : -1;
+    return (separator === -1 ? group : group.slice(separator + 1)).split(',');
+  });
+
+  return endpoints.some((endpoint) => {
+    if (endpoint === 'direct://') return false;
+    const candidate = endpoint.includes('://') ? endpoint : `http://${endpoint}`;
+    const authority = candidate.replace(/^[^:]+:\/\//, '').split(/[/?#]/, 1)[0];
+    if (authority.includes('@')) return true;
+
+    try {
+      const url = new URL(candidate);
+      return Boolean(url.username || url.password);
+    } catch {
+      return false;
+    }
+  });
+}
+
 /*
  * 嵌套配置统一使用 `.prefault({})` 而非 `.default({})`：
  * Zod 4 的 `.default()` 在输入为 undefined 时原样返回默认值，不会再过一次内部 schema，
@@ -107,7 +133,24 @@ const networkSchema = z
     requestTimeoutSec: positiveIntSchema.default(20),
     offlinePageEnabled: z.boolean().default(true),
   })
-  .prefault({});
+  .prefault({})
+  .superRefine((network, ctx) => {
+    if (proxyServerContainsCredentials(network.proxyServer)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['proxyServer'],
+        message: '代理账号密码不能写入 config.json',
+      });
+    }
+
+    if (network.proxyMode === 'fixed' && !network.proxyServer.trim()) {
+      ctx.addIssue({ code: 'custom', path: ['proxyServer'], message: 'fixed 代理模式必须填写 proxyServer' });
+    }
+
+    if (network.proxyMode === 'pac' && parseHttpUrl(network.proxyServer) === null) {
+      ctx.addIssue({ code: 'custom', path: ['proxyServer'], message: 'PAC 地址必须是包含主机名的 http:// 或 https:// 地址' });
+    }
+  });
 
 const startupSchema = z
   .object({
