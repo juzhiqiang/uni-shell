@@ -14,6 +14,13 @@ export const LOGIN_LAUNCH_FLAG = '--launched-at-login';
 
 export type LaunchSource = 'manual' | 'login';
 
+/** 本次进程的启动上下文；由 argv 推导来源。 */
+export interface LaunchContext {
+  source: LaunchSource;
+  argv: string[];
+  workingDirectory: string;
+}
+
 export interface SecondLaunchPayload {
   argv: string[];
   workingDirectory: string;

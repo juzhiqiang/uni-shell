@@ -58,6 +58,9 @@ function createFakeWindow() {
       mainCreated = true;
       mainVisible = true;
     },
+    async reloadMain() {
+      calls.push('reloadMain');
+    },
     async showAndFocusMain() {
       calls.push('showAndFocusMain');
       mainVisible = true;
@@ -140,6 +143,7 @@ function createTrayFake() {
       create(next: TrayActions) {
         calls.push('create');
         actions = next;
+        return { ok: true };
       },
       destroy() {
         calls.push('destroy');

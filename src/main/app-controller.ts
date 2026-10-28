@@ -3,15 +3,33 @@
  *
  * 规则来源：规格 v2.1 §4（总体运行流程）与 `rules/architecture.md`「分层职责」。
  *
- * 本模块只做编排：配置读写、窗口、托盘、延迟、平台能力全部通过端口注入，
+ * 本模块只做编排：配置读写、窗口、托盘、自启、延迟、平台能力全部通过端口注入，
  * 不直接依赖 Electron 或具体 OS API，因此可在纯 Node 环境下完整测试。
+ *
+ * 依赖方向：控制器依赖平台实现（startup、tray、platform），平台实现不得反向依赖本模块。
  */
 
 import type { AppConfig } from './config/config-schema';
 import type { ConfigLoadResult } from './config/config-store';
 import type { ResolveConfigPathsOptions, ResolvedConfigPaths } from './platform/config-paths';
 import type { PlatformCapabilities } from './platform/platform-adapter';
-import { detectLaunchContext, type LaunchSource } from './instance/single-instance';
+import { detectLaunchContext, type LaunchContext, type LaunchSource } from './instance/single-instance';
+import {
+  runStartupDelay,
+  setOpenAtLogin,
+  shouldApplyDelay,
+  type CancelableDelay,
+  type LoginItemPort,
+  type LoginItemResult,
+} from './startup/startup-manager';
+import {
+  createTray,
+  installFocusedShortcut,
+  type ShortcutHandle,
+  type ShortcutTarget,
+  type TrayActions,
+  type TrayPort,
+} from './tray/tray-manager';
 
 export type AppState =
   | 'idle'
@@ -22,12 +40,6 @@ export type AppState =
   | 'shutting-down'
   | 'stopped';
 
-export interface LaunchContext {
-  source: LaunchSource;
-  argv: string[];
-  workingDirectory: string;
-}
-
 /** 结构化日志接口；Task 9 的 logger 实现可结构性满足它。 */
 export interface Logger {
   info(event: string, data?: unknown): void;
@@ -35,38 +47,18 @@ export interface Logger {
   error(event: string, data?: unknown): void;
 }
 
-export interface CancelableDelay {
-  cancel(): void;
-  readonly pending: boolean;
-}
-
 export interface WindowPort {
   openConfigWindow(reason: string): Promise<void>;
   createMainWindow(config: AppConfig): Promise<void>;
   showAndFocusMain(): Promise<void>;
   hideMain(): Promise<void>;
+  /** 重新加载目标网页（托盘「重新加载网页」）。 */
+  reloadMain(): Promise<void>;
   isMainWindowVisible(): boolean;
   isConfigWindowOpen(): boolean;
   focusConfigWindow(): void;
 }
 
-/** 规格 §10 的四个固定托盘动作。 */
-export interface TrayActions {
-  showWindow(): void | Promise<void>;
-  openConfig(): void | Promise<void>;
-  reload(): void | Promise<void>;
-  quit(): void | Promise<void>;
-}
-
-export interface TrayPort {
-  create(actions: TrayActions): void;
-  destroy(): void;
-}
-
-/**
- * 延迟端口契约。Task 7 的 `runStartupDelay` 将提供平台相关实现并替换默认值，
- * 签名保持一致以便直接替换。
- */
 export interface DelayPort {
   run(config: AppConfig['startup'], context: LaunchContext, onReady: () => void): CancelableDelay;
 }
@@ -82,6 +74,10 @@ export interface AppControllerDeps {
   window: WindowPort;
   tray?: TrayPort;
   delay?: DelayPort;
+  /** 登录项端口；提供时由控制器按配置应用开机自启。 */
+  loginItem?: LoginItemPort;
+  /** 快捷键宿主窗口；提供时按配置安装仅焦点生效的维护快捷键。 */
+  shortcutTarget?: ShortcutTarget;
   singleInstance?: SingleInstanceHandle;
   log?: Logger;
 }
@@ -99,43 +95,20 @@ const noopLogger: Logger = {
   error: () => {},
 };
 
-/**
- * 是否需要延迟。
- *
- * 规格 §9：`delayOnlyOnLogin=true` 时延迟只对登录启动生效，手动启动立即执行。
- * 该判断由控制器（启动状态机的所有者）持有，延迟端口退化为纯计时器，
- * 避免同一策略在两处重复实现。
+/*
+ * 以下再导出一侧是为了保持编排层的公共 API 稳定：启动策略与托盘契约的权威实现
+ * 已移至 startup-manager / tray-manager（平台实现不得反向依赖 app-controller，
+ * 因此判定逻辑不能留在这里），此处仅转发。
  */
-export function shouldApplyDelay(config: AppConfig['startup'], context: LaunchContext): boolean {
-  return config.delaySec > 0 && (!config.delayOnlyOnLogin || context.source === 'login');
-}
+export { shouldApplyDelay, clampDelaySec } from './startup/startup-manager';
+export type { LaunchContext } from './instance/single-instance';
+export type { CancelableDelay } from './startup/startup-manager';
+export type { TrayActions, TrayPort, TrayResult } from './tray/tray-manager';
 
-/**
- * 默认延迟实现：到点触发 `onReady`，可取消。
- * Task 7 可提供平台相关实现替换，契约保持一致。
- */
+/** 默认延迟端口：直接采用 startup-manager 的实现。 */
 export function createDefaultDelayPort(): DelayPort {
   return {
-    run(config, _context, onReady) {
-      let cancelled = false;
-      let fired = false;
-      const timer = setTimeout(() => {
-        if (cancelled) return;
-        fired = true;
-        onReady();
-      }, config.delaySec * 1000);
-
-      return {
-        cancel() {
-          cancelled = true;
-          clearTimeout(timer);
-        },
-        /** 尚未触发且未被取消时为 true。 */
-        get pending() {
-          return !cancelled && !fired;
-        },
-      };
-    },
+    run: (config, context, onReady) => runStartupDelay(config, context, onReady),
   };
 }
 
@@ -145,6 +118,8 @@ export class AppController {
   private paths: ResolvedConfigPaths | undefined;
   private config: AppConfig | undefined;
   private delayHandle: CancelableDelay | undefined;
+  private trayHandle: { destroy(): void } | undefined;
+  private shortcutHandle: ShortcutHandle | undefined;
   private mainWindowCreated = false;
   private started = false;
 
@@ -207,6 +182,8 @@ export class AppController {
     log.info('config-loaded', { path: result.path, source: result.source });
 
     this.createTray();
+    await this.ensureOpenAtLogin();
+    this.installShortcut();
     await this.applyStartupStrategy();
   }
 
@@ -262,18 +239,83 @@ export class AppController {
     await this.deps.window.showAndFocusMain();
   }
 
+  /** 规格 §10：创建托盘；不可用时降级而不影响主流程。 */
   private createTray(): void {
     const tray = this.deps.tray;
-    if (!tray) return;
+    if (!tray || this.trayHandle) return;
 
-    tray.create({
+    const actions: TrayActions = {
       showWindow: () => this.showAndFocusMain(),
       openConfig: () => this.deps.window.openConfigWindow('用户从托盘打开配置界面'),
-      reload: () => this.deps.window.showAndFocusMain(),
+      reload: () => this.reloadMain(),
       quit: () => {
         void this.shutdown();
       },
+    };
+
+    const result = createTray(actions, this.deps.capabilities, { port: tray });
+    if (result.degraded) {
+      (this.deps.log ?? noopLogger).warn('tray-degraded', {
+        reason: result.reason,
+        fallback: result.fallback,
+      });
+      return;
+    }
+
+    this.trayHandle = tray;
+  }
+
+  private async reloadMain(): Promise<void> {
+    await this.deps.window.reloadMain();
+  }
+
+  /** 规格 §10：安装仅在客户端窗口获得焦点时生效的维护快捷键。 */
+  private installShortcut(): void {
+    const config = this.config;
+    const target = this.deps.shortcutTarget;
+    if (!config || !target) return;
+
+    if (!config.maintenance.hotkeyEnabled) {
+      (this.deps.log ?? noopLogger).info('shortcut-disabled');
+      return;
+    }
+
+    this.shortcutHandle = installFocusedShortcut(target, config.maintenance.hotkey, () => {
+      void this.showAndFocusMain();
     });
+
+    if (!this.shortcutHandle) {
+      (this.deps.log ?? noopLogger).warn('shortcut-invalid-binding', { binding: config.maintenance.hotkey });
+    }
+  }
+
+  /**
+   * 规格 §9：`openAtLogin=true` 时确保登录项已注册。
+   *
+   * 只为 `true` 主动写入：配置为 `false` 时不动手，避免覆盖用户在操作系统侧
+   * 自行设置的登录项。需要关闭时由配置界面显式调用 `applyOpenAtLogin(false)`。
+   */
+  private async ensureOpenAtLogin(): Promise<void> {
+    const config = this.config;
+    if (!config?.startup.openAtLogin) return;
+    await this.applyOpenAtLogin(true);
+  }
+
+  /** 显式设置开机自启；供配置界面保存时调用。 */
+  async applyOpenAtLogin(enabled: boolean): Promise<LoginItemResult | undefined> {
+    const port = this.deps.loginItem;
+    if (!port) return undefined;
+
+    const result = await setOpenAtLogin(enabled, { port });
+
+    (this.deps.log ?? noopLogger).info('login-item', {
+      desired: enabled,
+      ok: result.ok,
+      mechanism: result.mechanism,
+      reason: result.reason,
+    });
+
+    return result;
   }
 
   /**
@@ -333,7 +375,10 @@ export class AppController {
     this.state = 'shutting-down';
 
     this.cancelDelay();
-    this.deps.tray?.destroy();
+    this.shortcutHandle?.dispose();
+    this.shortcutHandle = undefined;
+    this.trayHandle?.destroy();
+    this.trayHandle = undefined;
     this.deps.singleInstance?.release();
 
     log.info('shutdown', { configPath: this.paths?.configPath });
