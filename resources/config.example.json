@@ -12,6 +12,7 @@
     "proxyMode": "direct",
     "proxyServer": "",
     "proxyBypass": "",
+    "apiProxyHosts": [],
     "retryIntervalSec": 3,
     "requestTimeoutSec": 20,
     "offlinePageEnabled": true
@@ -33,6 +34,9 @@
     "allowExternalLinks": false,
     "allowPopups": false,
     "allowDownloads": false
+  },
+  "appearance": {
+    "icon": ""
   },
   "logging": {
     "level": "info",
