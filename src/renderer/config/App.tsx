@@ -39,6 +39,7 @@ interface FormDraft {
   proxyMode: ProxyMode;
   proxyServer: string;
   proxyBypass: string;
+  apiProxyHosts: string;
   retryIntervalSec: string;
   requestTimeoutSec: string;
   offlinePageEnabled: boolean;
@@ -85,6 +86,7 @@ function toDraft(config: AppConfig): FormDraft {
     proxyMode: config.network.proxyMode,
     proxyServer: config.network.proxyServer,
     proxyBypass: config.network.proxyBypass,
+    apiProxyHosts: (config.network.apiProxyHosts ?? []).join('\n'),
     retryIntervalSec: String(config.network.retryIntervalSec),
     requestTimeoutSec: String(config.network.requestTimeoutSec),
     offlinePageEnabled: config.network.offlinePageEnabled,
@@ -112,6 +114,14 @@ function toInteger(raw: string): number | string {
   return Number.parseInt(trimmed, 10);
 }
 
+/** 多行（或逗号/分号分隔）的主机列表解析为字符串数组，供接口域名与授权源复用。 */
+function toHostList(raw: string): string[] {
+  return raw
+    .split(/[\n,;]/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 function parseNonNegativeInteger(raw: string): number | undefined {
   const trimmed = raw.trim();
   if (!/^\d+$/.test(trimmed)) return undefined;
@@ -134,6 +144,7 @@ function buildCandidate(draft: FormDraft): Record<string, unknown> {
       proxyMode: draft.proxyMode,
       proxyServer: draft.proxyServer.trim(),
       proxyBypass: draft.proxyBypass.trim(),
+      apiProxyHosts: toHostList(draft.apiProxyHosts),
       retryIntervalSec: toInteger(draft.retryIntervalSec),
       requestTimeoutSec: toInteger(draft.requestTimeoutSec),
       offlinePageEnabled: draft.offlinePageEnabled,
@@ -528,6 +539,8 @@ export function ConfigurationApp() {
 
   const saving = phase === 'saving';
   const showProxyServer = draft.proxyMode === 'fixed' || draft.proxyMode === 'pac';
+  const showApiProxyHosts = draft.proxyMode !== 'direct';
+  const apiProxyHostsEmpty = toHostList(draft.apiProxyHosts).length === 0;
 
   return (
     <main className="config-page">
@@ -647,6 +660,20 @@ export function ConfigurationApp() {
               placeholder="localhost;127.0.0.1"
               onChange={(value) => update('proxyBypass', value)}
             />
+          )}
+          {showApiProxyHosts && (
+            <TextAreaField
+              id="apiProxyHosts"
+              label="接口域名（每行一个；只有这些主机的请求经过代理，其余流量直连）"
+              value={draft.apiProxyHosts}
+              placeholder={'api.example.com\n*.example.com'}
+              onChange={(value) => update('apiProxyHosts', value)}
+            />
+          )}
+          {showApiProxyHosts && apiProxyHostsEmpty && (
+            <p role="status" className="banner banner-dirty">
+              未填写接口域名，代理不生效：页面与全部请求都将直连。
+            </p>
           )}
           <NumberField
             id="retryIntervalSec"

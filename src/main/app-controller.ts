@@ -18,6 +18,7 @@ import type { AppConfig } from './config/config-schema';
 import type { NetworkConfig } from './config/config-types';
 import type { ConfigLoadResult } from './config/config-store';
 import type { Logger } from './logging/logger';
+import type { ProxyApplyResult } from './network/proxy-manager';
 import { RetryController, classifyLoadFailure, type LoadFailureDetails } from './network/retry-controller';
 import type { ResolveConfigPathsOptions, ResolvedConfigPaths } from './platform/config-paths';
 import type { PlatformCapabilities } from './platform/platform-adapter';
@@ -58,7 +59,7 @@ export type { Logger };
 
 /** 代理应用端口；生产环境经 Electron session 注入（Task 5 的 applyProxy）。 */
 export interface ProxyPort {
-  apply(config: NetworkConfig): Promise<void>;
+  apply(config: NetworkConfig): Promise<ProxyApplyResult>;
 }
 
 /** 电源监听端口；生产环境注入 Electron `powerMonitor`。 */
@@ -385,19 +386,32 @@ export class AppController {
   }
 
   /**
-   * 规格 §7：应用代理配置。
+   * 规格 §7：应用接口代理。
    *
    * 启动流程在创建主窗口前调用；运行中代理变化（配置保存后的热切换）可重复调用。
    * 失败不阻塞启动：目标页面会加载失败，由重试与离线页接管，错误经日志留痕。
+   * 代理只对 `network.apiProxyHosts` 命中的接口域名生效，其余流量直连。
    */
   async applyProxyConfig(network: NetworkConfig): Promise<void> {
     const port = this.deps.proxy;
     if (!port) return;
 
     const log = this.deps.log ?? noopLogger;
+    if (network.proxyMode !== 'direct' && network.apiProxyHosts.length === 0) {
+      log.warn('proxy-scope-empty', { mode: network.proxyMode });
+    }
+
     try {
-      await port.apply(network);
-      log.info('proxy-applied', { mode: network.proxyMode });
+      const result = await port.apply(network);
+      log.info('proxy-applied', {
+        mode: result.mode,
+        effective: result.effective,
+        hostCount: result.hostCount,
+        proxiedHostCount: result.proxiedHostCount,
+      });
+      for (const note of result.notes) {
+        log.warn('proxy-degraded', { mode: result.mode, note });
+      }
     } catch (error) {
       log.error('proxy-apply-failed', { mode: network.proxyMode, message: describeError(error) });
     }

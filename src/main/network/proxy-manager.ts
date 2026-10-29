@@ -1,95 +1,381 @@
+/**
+ * 接口代理应用（规格 v2.1.1 §7）。
+ *
+ * 语义：代理是**接口代理**，不是网络代理——只有 `network.apiProxyHosts` 命中的请求
+ * 经过代理，页面导航、静态资源和其余流量一律直连。
+ *
+ * 实现要点（均已针对 Electron 45 / Chromium 134 源码核实）：
+ * - Chromium 的 `proxyRules` 只支持按**协议**映射，不支持按域名映射
+ *   （`net/proxy_resolution/proxy_config.cc` 的 `ProxyRules::ParseFromString`）；
+ * - 按域名只能走 PAC；Chromium 的 PAC 获取器明确允许 `data:` URL 内联 base64 脚本
+ *   （`pac_file_fetcher_impl.cc` 的 `IsUrlSchemeAllowed`，Chromium 134 与当前版本一致；
+ *   `file://` 不允许）；
+ * - Electron 的 `session.setProxy` 原样透传 `pacScript`（无 scheme 校验）；
+ * - `proxyBypassRules` 继续透传：Chromium 的 bypass 规则优先于 PAC 判定。
+ *
+ * 因此本模块生成「仅接口域名返回代理、其余 DIRECT」的 PAC 脚本，经 data: URL 下发：
+ * - `fixed`：把 `proxyServer` 单个代理固定到全部接口域名；
+ * - `system`：先切回系统设置，用 `session.resolveProxy` 逐域名解析，再把解析结果固定进 PAC；
+ * - `pac`：拉取用户 PAC 文本，重命名其 `FindProxyForURL` 后包一层「仅接口域名调用」的分发器。
+ */
+
 import type { ProxyConfig, Session } from 'electron';
 
 import type { NetworkConfig } from '../config/config-types';
+import { validateProxyEndpointValue } from '../config/config-schema';
 
-const proxyProtocols = new Set(['http:', 'https:', 'socks4:', 'socks5:', 'quic:']);
-const routingSchemes = new Set(['http', 'https', 'ftp', 'socks']);
+/** PAC data URL 前缀；Chromium 只接受 base64 形式（net/base/data_url.cc）。 */
+const PAC_DATA_URL_PREFIX = 'data:application/x-ns-proxy-autoconfig;charset=utf-8;base64,';
 
-function parseUrl(value: string, field: string, allowedProtocols: Set<string>): URL {
+/** 用户 PAC 脚本大小上限，与 Chromium 的 1 MB 限制保持距离。 */
+const MAX_PAC_SCRIPT_BYTES = 512 * 1024;
+
+/** 系统代理解析结果只允许出现的字符，杜绝注入进 PAC 脚本文本。 */
+const RESOLVED_PROXY_PATTERN = /^[A-Za-z0-9 .:;_-]+$/;
+
+/** 一条「接口域名 → PAC 代理标识」规则。 */
+export interface PacHostRule {
+  /** 归一化后的主机模式：精确主机名或 `*.example.com` 子域通配。 */
+  host: string;
+  /** PAC 代理标识或链，如 `PROXY 10.0.0.9:8080`、`SOCKS5 10.0.0.9:1080;DIRECT`。 */
+  proxy: string;
+}
+
+/** 代理应用结果，供编排层记录诊断（规格 §12）。 */
+export interface ProxyApplyResult {
+  mode: NetworkConfig['proxyMode'];
+  /** 实际生效范围：`direct`（含未配置接口域名）或 `pac`（仅接口域名）。 */
+  effective: 'direct' | 'pac';
+  /** 配置的接口域名数量。 */
+  hostCount: number;
+  /** 实际固定了代理的接口域名数量（system 模式可能少于前者）。 */
+  proxiedHostCount: number;
+  /** 降级或异常说明，非空时调用方应记录告警。 */
+  notes: string[];
+}
+
+export interface ApplyProxyOptions {
+  /** pac 模式下拉取用户 PAC 文本；缺省使用带超时的全局 fetch。 */
+  fetchPacScript?: (url: string, timeoutMs: number) => Promise<string>;
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** 主机模式转 PAC 判断表达式；主机名已由 schema 校验，此处仅防御性拒绝引号。 */
+function pacHostCondition(host: string): string {
+  if (host.includes("'") || host.includes('"')) {
+    throw new Error(`接口域名包含意外字符：${host}`);
+  }
+  if (host.startsWith('*.')) {
+    return `dnsDomainIs(h, '${host.slice(1)}')`;
+  }
+  return `h === '${host}'`;
+}
+
+/** 把配置中的代理服务器地址转换为 PAC 代理标识（PROXY/HTTPS/SOCKS4/SOCKS5）。 */
+export function toPacProxyIdentifier(proxyServer: string): string {
+  const trimmed = proxyServer.trim();
+  const candidate = trimmed.includes('://') ? trimmed : `http://${trimmed}`;
+
   let url: URL;
   try {
-    url = new URL(value);
+    url = new URL(candidate);
   } catch {
-    throw new Error(`${field} 必须是有效的 URL`);
+    throw new Error(`代理服务器地址无效：${trimmed}`);
   }
 
-  if (!allowedProtocols.has(url.protocol)) {
-    throw new Error(`${field} 使用了不支持的协议`);
-  }
-
-  if (!url.hostname || url.username || url.password) {
-    throw new Error(`${field} 必须包含主机名且不能包含代理凭据`);
-  }
-
-  return url;
-}
-
-function validateProxyEndpoint(endpoint: string): void {
-  if (endpoint === 'direct://') return;
-
-  const candidate = endpoint.includes('://') ? endpoint : `http://${endpoint}`;
-  const proxyUrl = parseUrl(candidate, 'proxyServer', proxyProtocols);
-  if ((proxyUrl.pathname !== '' && proxyUrl.pathname !== '/') || proxyUrl.search || proxyUrl.hash) {
-    throw new Error('proxyServer 代理地址不能包含路径、查询参数或片段');
+  const host = url.host;
+  switch (url.protocol) {
+    case 'http:':
+      return `PROXY ${host}`;
+    case 'https:':
+      return `HTTPS ${host}`;
+    case 'socks4:':
+      return `SOCKS4 ${host}`;
+    case 'socks5:':
+      return `SOCKS5 ${host}`;
+    default:
+      throw new Error(`代理协议不支持 PAC：${url.protocol}（支持 http/https/socks4/socks5）`);
   }
 }
 
-function validateProxyRules(value: string): string {
-  const rules = value.trim();
-  if (!rules) throw new Error('proxyServer 不能为空');
+/**
+ * 解析 `session.resolveProxy` 返回的 PAC 串，取第一个代理及其回退链。
+ * 首个条目为 DIRECT 或内容包含意外字符时返回 null（按直连处理）。
+ */
+export function parseResolvedProxy(pacString: string): string | null {
+  if (!RESOLVED_PROXY_PATTERN.test(pacString)) return null;
 
-  for (const group of rules.split(';')) {
-    if (!group) throw new Error('proxyServer 包含空代理规则');
+  const entries = pacString
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (entries.length === 0) return null;
+  if (entries[0].toUpperCase() === 'DIRECT') return null;
 
-    const separator = group.indexOf('=');
-    const route = separator === -1 ? undefined : group.slice(0, separator);
-    const endpoints = separator === -1 ? group : group.slice(separator + 1);
-    if (route !== undefined && !routingSchemes.has(route)) {
-      throw new Error('proxyServer 包含不支持的路由协议');
-    }
-
-    const endpointList = endpoints.split(',');
-    if (endpointList.some((endpoint) => !endpoint)) throw new Error('proxyServer 包含空代理地址');
-    endpointList.forEach(validateProxyEndpoint);
-  }
-
-  return rules;
+  // PAC 语法里 HTTP 是 PROXY 的别名，统一成 PROXY 便于阅读与测试。
+  return entries.map((entry) => entry.replace(/^HTTP\s+/i, 'PROXY ')).join(';');
 }
 
-function buildProxyConfig(config: NetworkConfig): ProxyConfig {
-  const bypassRules = config.proxyBypass.trim();
+/** 生成「仅接口域名走代理、其余 DIRECT」的 PAC 脚本（fixed/system 模式）。 */
+export function buildStaticInterfaceProxyPacScript(rules: readonly PacHostRule[]): string {
+  const conditions = rules.map((rule) => `    if (${pacHostCondition(rule.host)}) return '${rule.proxy}';`);
 
-  switch (config.proxyMode) {
-    case 'direct':
-      return { mode: 'direct' };
-    case 'system':
-      return { mode: 'system' };
-    case 'fixed': {
-      const proxyRules = validateProxyRules(config.proxyServer);
-      return {
-        mode: 'fixed_servers',
-        proxyRules,
-        ...(bypassRules ? { proxyBypassRules: bypassRules } : {}),
-      };
-    }
-    case 'pac': {
-      const pacUrl = parseUrl(config.proxyServer.trim(), 'proxyServer', new Set(['http:', 'https:']));
-      return {
-        mode: 'pac_script',
-        pacScript: pacUrl.href,
-        ...(bypassRules ? { proxyBypassRules: bypassRules } : {}),
-      };
-    }
-    default: {
-      const unsupportedMode: never = config.proxyMode;
-      throw new Error(`不支持的代理模式：${String(unsupportedMode)}`);
-    }
-  }
+  return [
+    '// Generated by UniShell: interface proxy (spec v2.1.1 section 7).',
+    '// Only configured API hosts use a proxy; every other request goes DIRECT.',
+    'function uniShellApiProxyForHost(h) {',
+    '  h = String(h).toLowerCase().replace(/\\.+$/, "");',
+    ...(conditions.length > 0 ? conditions : ['  return "";']),
+    '  return "";',
+    '}',
+    'function FindProxyForURL(url, host) {',
+    '  try {',
+    '    var proxy = uniShellApiProxyForHost(host);',
+    '    if (proxy) return proxy;',
+    '  } catch (e) {',
+    '    // PAC 运行时报错会导致强制代理配置失败，任何异常都按直连处理。',
+    '  }',
+    '  return "DIRECT";',
+    '}',
+    '',
+  ].join('\n');
 }
 
-/** Applies the selected proxy and drops connections opened with the previous settings. */
-export async function applyProxy(session: Session, config: NetworkConfig): Promise<void> {
-  const proxyConfig = buildProxyConfig(config);
-  await session.setProxy(proxyConfig);
+/** 重命名用户 PAC 入口，避免与分发器同名互相覆盖。 */
+function renameUserPacEntryPoint(source: string): string {
+  return source.replace(/\bFindProxyForURL\b/g, 'uniShellUserPac');
+}
+
+/**
+ * 包装用户 PAC（pac 模式）：仅接口域名的请求交给用户 PAC 判定，其余 DIRECT。
+ * 用户脚本原样保留（其引用的 PAC 标准 helper 由 Chromium 注入同一作用域）。
+ */
+export function wrapUserPacScript(userPacSource: string, hosts: readonly string[]): string {
+  if (!/\bFindProxyForURL\s*\(/.test(userPacSource)) {
+    throw new Error('PAC 脚本未定义 FindProxyForURL(url, host)');
+  }
+
+  const conditions = hosts.map((host) => pacHostCondition(host));
+  return [
+    '// Generated by UniShell: interface proxy wrapper (spec v2.1.1 section 7).',
+    '// The user PAC below only decides API hosts; every other request goes DIRECT.',
+    'function uniShellIsApiHost(h) {',
+    '  h = String(h).toLowerCase().replace(/\\.+$/, "");',
+    `  return ${conditions.length > 0 ? conditions.join('\n    || ') : 'false'};`,
+    '}',
+    renameUserPacEntryPoint(userPacSource),
+    'function FindProxyForURL(url, host) {',
+    '  try {',
+    '    if (uniShellIsApiHost(host)) return uniShellUserPac(url, host);',
+    '  } catch (e) {',
+    '    // 用户 PAC 异常按直连处理，避免强制代理配置失败。',
+    '  }',
+    '  return "DIRECT";',
+    '}',
+    '',
+  ].join('\n');
+}
+
+/** PAC 脚本转 Chromium 接受的 base64 data URL。 */
+export function toPacScriptDataUrl(script: string): string {
+  return `${PAC_DATA_URL_PREFIX}${Buffer.from(script, 'utf8').toString('base64')}`;
+}
+
+function pacProxyConfig(script: string, bypassRules: string): ProxyConfig {
+  return {
+    mode: 'pac_script',
+    pacScript: toPacScriptDataUrl(script),
+    ...(bypassRules ? { proxyBypassRules: bypassRules } : {}),
+  };
+}
+
+function clampTimeout(requestTimeoutSec: number): number {
+  if (!Number.isFinite(requestTimeoutSec) || requestTimeoutSec <= 0) return 10_000;
+  return Math.min(Math.max(requestTimeoutSec * 1000, 1_000), 60_000);
+}
+
+/** 拉取用户 PAC 文本；Chromium 要求 PAC 响应恰为 200。 */
+async function fetchPacSource(
+  url: string,
+  requestTimeoutSec: number,
+  fetchImpl: ApplyProxyOptions['fetchPacScript'],
+): Promise<string> {
+  const timeoutMs = clampTimeout(requestTimeoutSec);
+  if (fetchImpl !== undefined) return fetchImpl(url, timeoutMs);
+
+  const response = await fetch(url, {
+    method: 'GET',
+    redirect: 'manual',
+    cache: 'no-store',
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (response.status !== 200) {
+    throw new Error(`PAC 地址返回 HTTP ${response.status}`);
+  }
+  const text = await response.text();
+  if (text.length > MAX_PAC_SCRIPT_BYTES) {
+    throw new Error(`PAC 脚本过大（超过 ${MAX_PAC_SCRIPT_BYTES / 1024} KB）`);
+  }
+  return text;
+}
+
+/** 校验 PAC 地址：仅 http/https 且带主机名。 */
+function validatePacUrl(value: string): string {
+  const trimmed = value.trim();
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error('PAC 地址必须是有效的 URL');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('PAC 地址必须是 http:// 或 https:// 地址');
+  }
+  if (!url.hostname) {
+    throw new Error('PAC 地址必须包含主机名');
+  }
+  return url.href;
+}
+
+async function closeAndReturn(session: Session, result: ProxyApplyResult): Promise<ProxyApplyResult> {
   await session.closeAllConnections();
+  return result;
+}
+
+/**
+ * 代理配置失败时显式回落到直连。
+ *
+ * 为什么必须回落：Electron 会话默认使用系统代理设置，接口代理语义下
+ * 「系统代理」意味着全部流量走代理，与「只有接口域名走代理」相悖。
+ * 代理地址非法、PAC 拉取失败等问题必须留下确定性的直连状态，
+ * 而不是把会话留给默认的系统代理。回落失败不掩盖原始错误。
+ */
+async function degradeToDirect(session: Session): Promise<void> {
+  try {
+    await session.setProxy({ mode: 'direct' });
+    await session.closeAllConnections();
+  } catch {
+    // 回落本身失败时向上抛出原始错误，由调用方记录。
+  }
+}
+
+/** 按代理模式生成并应用 PAC/直连配置；任何问题抛出，由 `applyProxy` 统一回落。 */
+async function applyProxyMode(
+  session: Session,
+  config: NetworkConfig,
+  bypassRules: string,
+  options: ApplyProxyOptions,
+): Promise<ProxyApplyResult> {
+  const hosts = config.apiProxyHosts;
+
+  if (config.proxyMode === 'direct') {
+    await session.setProxy({ mode: 'direct' });
+    return closeAndReturn(session, {
+      mode: 'direct',
+      effective: 'direct',
+      hostCount: hosts.length,
+      proxiedHostCount: 0,
+      notes: [],
+    });
+  }
+
+  // fixed/pac/system 都需要接口域名；为空时代理不生效（界面提示 + 日志告警）。
+  if (hosts.length === 0) {
+    await session.setProxy({ mode: 'direct' });
+    return closeAndReturn(session, {
+      mode: config.proxyMode,
+      effective: 'direct',
+      hostCount: 0,
+      proxiedHostCount: 0,
+      notes: ['未配置接口域名，代理不生效，全部流量直连'],
+    });
+  }
+
+  if (config.proxyMode === 'fixed') {
+    const problem = validateProxyEndpointValue(config.proxyServer);
+    if (problem !== null) throw new Error(problem);
+
+    const proxy = toPacProxyIdentifier(config.proxyServer);
+    const script = buildStaticInterfaceProxyPacScript(hosts.map((host) => ({ host, proxy })));
+    await session.setProxy(pacProxyConfig(script, bypassRules));
+    return closeAndReturn(session, {
+      mode: 'fixed',
+      effective: 'pac',
+      hostCount: hosts.length,
+      proxiedHostCount: hosts.length,
+      notes: [],
+    });
+  }
+
+  if (config.proxyMode === 'system') {
+    // 先切回系统设置，再逐域名解析；解析结果固定进 PAC，避免依赖运行中的旧配置。
+    await session.setProxy({ mode: 'system' });
+
+    const rules: PacHostRule[] = [];
+    const notes: string[] = [];
+    for (const host of hosts) {
+      try {
+        const resolved = parseResolvedProxy(await session.resolveProxy(`http://${host}/`));
+        if (resolved !== null) rules.push({ host, proxy: resolved });
+      } catch (error) {
+        notes.push(`域名 ${host} 的系统代理解析失败：${describeError(error)}`);
+      }
+    }
+
+    if (rules.length === 0) {
+      await session.setProxy({ mode: 'direct' });
+      return closeAndReturn(session, {
+        mode: 'system',
+        effective: 'direct',
+        hostCount: hosts.length,
+        proxiedHostCount: 0,
+        notes: [...notes, '系统代理未返回可用代理，接口域名按直连处理'],
+      });
+    }
+
+    const script = buildStaticInterfaceProxyPacScript(rules);
+    await session.setProxy(pacProxyConfig(script, bypassRules));
+    return closeAndReturn(session, {
+      mode: 'system',
+      effective: 'pac',
+      hostCount: hosts.length,
+      proxiedHostCount: rules.length,
+      notes,
+    });
+  }
+
+  // pac 模式：仅接口域名按用户 PAC 判定走代理。
+  const pacUrl = validatePacUrl(config.proxyServer);
+  const source = await fetchPacSource(pacUrl, config.requestTimeoutSec, options.fetchPacScript);
+  const script = wrapUserPacScript(source, hosts);
+  await session.setProxy(pacProxyConfig(script, bypassRules));
+  return closeAndReturn(session, {
+    mode: 'pac',
+    effective: 'pac',
+    hostCount: hosts.length,
+    proxiedHostCount: hosts.length,
+    notes: [],
+  });
+}
+
+/**
+ * 应用接口代理并关闭旧连接（规格 §7）。
+ *
+ * 失败（代理地址非法、PAC 拉取失败等）时先显式回落直连再抛出：
+ * 调用方（编排层）记录错误后继续启动，由重试与离线页接管。
+ */
+export async function applyProxy(
+  session: Session,
+  config: NetworkConfig,
+  options: ApplyProxyOptions = {},
+): Promise<ProxyApplyResult> {
+  try {
+    return await applyProxyMode(session, config, config.proxyBypass.trim(), options);
+  } catch (error) {
+    await degradeToDirect(session);
+    throw error;
+  }
 }

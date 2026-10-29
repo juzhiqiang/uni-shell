@@ -22,8 +22,18 @@ import type { AppConfig } from '../../../src/main/config/config-types';
 
 const DEFAULT_CONFIG_PATH = '/home/tester/.config/uni-shell/config.json';
 
+const DEFAULT_NETWORK: AppConfig['network'] = {
+  proxyMode: 'direct',
+  proxyServer: '',
+  proxyBypass: '',
+  apiProxyHosts: [],
+  retryIntervalSec: 3,
+  requestTimeoutSec: 20,
+  offlinePageEnabled: true,
+};
+
 function createConfig(overrides: Partial<AppConfig> = {}): AppConfig {
-  return {
+  const base: AppConfig = {
     schemaVersion: 1,
     targetUrl: 'https://erp.example.com',
     window: {
@@ -33,14 +43,7 @@ function createConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       display: 'primary',
       closeAction: 'hide',
     },
-    network: {
-      proxyMode: 'direct',
-      proxyServer: '',
-      proxyBypass: '',
-      retryIntervalSec: 3,
-      requestTimeoutSec: 20,
-      offlinePageEnabled: true,
-    },
+    network: DEFAULT_NETWORK,
     startup: {
       openAtLogin: false,
       initialState: 'tray',
@@ -59,8 +62,16 @@ function createConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       allowPopups: false,
       allowDownloads: false,
     },
+    appearance: { icon: '' },
     logging: { level: 'info', retentionDays: 14 },
+  };
+
+  return {
+    ...base,
     ...overrides,
+    // network/appearance 允许只覆盖部分字段，未提供的字段保持默认值。
+    network: { ...base.network, ...overrides.network },
+    appearance: { ...base.appearance, ...overrides.appearance },
   };
 }
 
@@ -302,17 +313,72 @@ describe('代理条件字段', () => {
 
     expect(document.querySelector('#field-proxyServer')).toBeNull();
     expect(document.querySelector('#field-proxyBypass')).toBeNull();
+    expect(document.querySelector('#field-apiProxyHosts')).toBeNull();
 
     await selectField('proxyMode', 'fixed');
     expect(document.querySelector('#field-proxyServer')).not.toBeNull();
     expect(document.querySelector('#field-proxyBypass')).not.toBeNull();
+    expect(document.querySelector('#field-apiProxyHosts')).not.toBeNull();
 
     await selectField('proxyMode', 'pac');
     expect(document.querySelector('#field-proxyServer')).not.toBeNull();
     expect(document.querySelector('#field-proxyBypass')).toBeNull();
+    expect(document.querySelector('#field-apiProxyHosts')).not.toBeNull();
 
     await selectField('proxyMode', 'system');
     expect(document.querySelector('#field-proxyServer')).toBeNull();
+    expect(document.querySelector('#field-apiProxyHosts')).not.toBeNull();
+  });
+
+  it('接口域名按行（或逗号）解析后随配置保存', async () => {
+    const bridge = installBridge();
+
+    await renderApp();
+    await selectField('proxyMode', 'fixed');
+    await setTextField('proxyServer', 'http://proxy.internal:8080');
+    await setTextField('apiProxyHosts', 'api.example.com\n*.internal.example.com, other.example.com');
+    await submitForm();
+
+    expect(bridge.saveConfig).toHaveBeenCalledTimes(1);
+    const saved = bridge.saveConfig.mock.calls[0][0] as { network: { apiProxyHosts: string[] } };
+    expect(saved.network.apiProxyHosts).toEqual(['api.example.com', '*.internal.example.com', 'other.example.com']);
+  });
+
+  it('读取配置时回填接口域名', async () => {
+    installBridge({
+      getConfig: vi.fn(async () =>
+        createConfig({
+          network: {
+            proxyMode: 'fixed',
+            proxyServer: 'http://proxy.internal:8080',
+            proxyBypass: '',
+            apiProxyHosts: ['api.example.com', '*.internal.example.com'],
+            retryIntervalSec: 3,
+            requestTimeoutSec: 20,
+            offlinePageEnabled: true,
+          },
+        }),
+      ),
+    });
+
+    await renderApp();
+
+    expect((field('apiProxyHosts') as HTMLTextAreaElement).value).toBe('api.example.com\n*.internal.example.com');
+  });
+
+  it('代理模式非直连但未填接口域名时给出非阻塞提示，且不阻止保存', async () => {
+    const bridge = installBridge();
+
+    await renderApp();
+    await selectField('proxyMode', 'fixed');
+    await setTextField('proxyServer', 'http://proxy.internal:8080');
+
+    expect(document.body.textContent).toContain('未填写接口域名');
+    expect(document.body.textContent).toContain('代理不生效');
+
+    await submitForm();
+    expect(bridge.saveConfig).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).not.toContain('配置校验未通过');
   });
 });
 

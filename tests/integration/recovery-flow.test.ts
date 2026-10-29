@@ -207,15 +207,28 @@ function createFakePowerMonitor() {
   };
 }
 
-/** 假 Electron session：只记录代理配置应用。 */
+/** 假 Electron session：只记录代理配置应用与系统代理解析。 */
 function createFakeSession() {
   const setProxy = vi.fn(async () => {});
   const closeAllConnections = vi.fn(async () => {});
+  const resolveProxy = vi.fn(async () => 'DIRECT');
   return {
-    session: { setProxy, closeAllConnections } as unknown as Session,
+    session: { setProxy, closeAllConnections, resolveProxy } as unknown as Session,
     setProxy,
     closeAllConnections,
+    resolveProxy,
   };
+}
+
+/** 解码最近一次 setProxy 调用中的 PAC data URL，返回脚本文本。 */
+function lastPacScript(setProxy: ReturnType<typeof vi.fn>): string {
+  const calls = setProxy.mock.calls as Array<[{ mode?: string; pacScript?: string }?]>;
+  const last = calls[calls.length - 1]?.[0];
+  expect(last?.mode).toBe('pac_script');
+  const prefix = 'data:application/x-ns-proxy-autoconfig;charset=utf-8;base64,';
+  const pacScript = last?.pacScript ?? '';
+  expect(pacScript.startsWith(prefix)).toBe(true);
+  return Buffer.from(pacScript.slice(prefix.length), 'base64').toString('utf8');
 }
 
 interface LogLine {
@@ -436,33 +449,42 @@ describe('断网恢复（规格 §7、§14.1）', () => {
   });
 });
 
-describe('代理切换（规格 §7）', () => {
-  it('启动时应用固定代理，运行中可切换模式', async () => {
+describe('代理切换（规格 §7，接口代理）', () => {
+  it('fixed 模式只把代理固定到接口域名，运行中可切换模式', async () => {
     const { deps, memory, paths, session } = createDeps();
     const network: NetworkConfig = {
       ...baseConfig().network,
       proxyMode: 'fixed',
       proxyServer: 'http://proxy.internal:8080',
       proxyBypass: 'localhost',
+      apiProxyHosts: ['api.example.com'],
     };
     writeConfig(memory, paths, { ...baseConfig(), network });
 
     const controller = new AppController(deps);
     await controller.start(START_OPTIONS);
 
-    // 真实的 applyProxy 经假 session 落成 Electron 代理配置。
+    // 真实的 applyProxy 生成「仅接口域名走代理」的 PAC，经 data URL 下发给假 session。
     await settleLog();
-    expect(session.setProxy).toHaveBeenCalledWith({
-      mode: 'fixed_servers',
-      proxyRules: 'http://proxy.internal:8080',
-      proxyBypassRules: 'localhost',
-    });
+    expect(session.setProxy).toHaveBeenCalled();
+    const script = lastPacScript(session.setProxy);
+    expect(script).toContain('PROXY proxy.internal:8080');
+    expect(script).toContain("h === 'api.example.com'");
+    expect(session.setProxy.mock.calls.at(-1)?.[0]).toMatchObject({ proxyBypassRules: 'localhost' });
     expect(session.closeAllConnections).toHaveBeenCalled();
-    expect(logData(memory, 'proxy-applied')).toMatchObject({ mode: 'fixed' });
+    expect(logData(memory, 'proxy-applied')).toMatchObject({
+      mode: 'fixed',
+      effective: 'pac',
+      hostCount: 1,
+      proxiedHostCount: 1,
+    });
 
+    // 运行中切换到 system 模式：逐域名解析系统代理后重新固定。
+    session.resolveProxy.mockResolvedValue('PROXY system.corp:8080;DIRECT');
     await controller.applyProxyConfig({ ...network, proxyMode: 'system' });
 
-    expect(session.setProxy).toHaveBeenLastCalledWith({ mode: 'system' });
+    const switched = lastPacScript(session.setProxy);
+    expect(switched).toContain('PROXY system.corp:8080;DIRECT');
     await settleLog();
     expect(
       readLog(memory)
@@ -471,12 +493,32 @@ describe('代理切换（规格 §7）', () => {
     ).toEqual(['fixed', 'system']);
   });
 
+  it('未配置接口域名时代理不生效，记录告警并直连', async () => {
+    const { deps, memory, paths, session } = createDeps();
+    writeConfig(memory, paths, {
+      ...baseConfig(),
+      network: { ...baseConfig().network, proxyMode: 'fixed', proxyServer: 'http://proxy.internal:8080' },
+    });
+
+    const controller = new AppController(deps);
+    await controller.start(START_OPTIONS);
+
+    expect(session.setProxy).toHaveBeenCalledWith({ mode: 'direct' });
+    await settleLog();
+    expect(logEvents(memory)).toContain('proxy-scope-empty');
+  });
+
   it('代理应用失败不阻塞启动，仅记录错误', async () => {
     const { deps, memory, paths, session, fakeWindow } = createDeps();
     session.setProxy.mockRejectedValueOnce(new Error('代理服务器不可达'));
     writeConfig(memory, paths, {
       ...baseConfig(),
-      network: { ...baseConfig().network, proxyMode: 'pac', proxyServer: 'https://pac.example.com/proxy.pac' },
+      network: {
+        ...baseConfig().network,
+        proxyMode: 'pac',
+        proxyServer: 'https://pac.example.com/proxy.pac',
+        apiProxyHosts: ['api.example.com'],
+      },
     });
 
     const controller = new AppController(deps);
