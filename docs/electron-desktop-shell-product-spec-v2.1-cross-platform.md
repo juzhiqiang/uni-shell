@@ -277,11 +277,13 @@ Linux 桌面未提供托盘协议时，客户端不得崩溃；应记录能力�
 
 | 平台 | 标准安装包 | 便携/绿色包 |
 |---|---|---|
-| Windows | NSIS 当前用户安装包，允许自定义目录 | ZIP 目录包 |
+| Windows | NSIS 当前用户一键安装包（装到 `%LOCALAPPDATA%\Programs\UniShell`，不需要 UAC，不提供目录选择） | ZIP 目录包 |
 | macOS | 签名并公证的 Universal DMG | ZIP 包，`.app` 与 `config.json` 同级 |
 | Linux | DEB | AppImage，`config.json` 与 AppImage 同级 |
 
 Windows 严禁默认安装到 `C:\Program Files`。macOS 包必须通过 Developer ID 签名和 notarization。Linux 产物至少提供 SHA-256 校验。所有平台升级不得覆盖用户配置。
+
+三平台安装包统一使用正式应用图标（`resources/icon.ico` / `icon.icns` / `icon-512.png`）：安装程序界面、桌面与开始菜单快捷方式、macOS 磁盘映像、Linux 桌面条目均显示该图标，不再使用 Electron 默认图标。安装包图标与运行时图标（规格 §5.4 的用户自定义图标）相互独立，互不影响。
 
 ## 14. 验收标准
 
@@ -298,7 +300,7 @@ Windows 严禁默认安装到 `C:\Program Files`。macOS 包必须通过 Develop
 
 ### 14.2 平台验收
 
-- Windows：当前用户安装、任务栏覆盖、开机自启、托盘、全屏/Kiosk、置顶；
+- Windows：当前用户一键安装（不弹 UAC）、任务栏覆盖、开机自启、托盘、全屏/Kiosk、置顶；
 - macOS：Universal 构建、签名公证、菜单栏、登录启动、多显示器、休眠唤醒；
 - Linux：DEB 和 AppImage、GNOME X11/Wayland、XDG 自启、托盘能力降级、多显示器。
 

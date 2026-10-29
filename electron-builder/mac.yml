@@ -11,6 +11,8 @@ extraResources:
     to: config.example.json
 mac:
   category: public.app-category.utilities
+  # 正式图标：Dock、Finder、磁盘映像与关于面板。运行时 Dock 图标由规格 §5.4 覆盖。
+  icon: resources/icon.icns
   target:
     - target: dmg
       arch:
