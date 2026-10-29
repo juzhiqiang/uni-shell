@@ -1,0 +1,114 @@
+{
+  "product": "UniShell",
+  "version": "0.1.0",
+  "electron": "45.0.0",
+  "generatedAt": "2026-10-29T03:26:21Z",
+  "status": "draft",
+  "statusReason": "三平台实机验收未执行；macOS/Linux 正式产物未构建；CI 打包工作流未运行。正式发布前必须以 CI 官方产物通过 npm run verify:release 重新生成清单。",
+  "platforms": ["windows", "mac", "linux"],
+  "configuration": {
+    "template": "config.example.json",
+    "activeConfigOverwrite": false,
+    "upgradePolicy": "preserve-existing"
+  },
+  "artifacts": [
+    {
+      "filename": "windows/UniShell-0.1.0-x64.exe",
+      "platform": "windows",
+      "architectures": ["x64"],
+      "sizeBytes": 122067038,
+      "sha256": "5ee9c964cef07ece1b3391ccd98d7d3487642af9b4cf669935e25b1f5560416e",
+      "signing": {
+        "codeSigned": false,
+        "notarized": false
+      },
+      "source": "local-validation-build",
+      "verifiedBy": "node scripts/verify-release.ts --platform=windows --release-dir=release/task10-windows-validation（任务 10，2026-10-29）"
+    },
+    {
+      "filename": "windows/UniShell-0.1.0-x64.zip",
+      "platform": "windows",
+      "architectures": ["x64"],
+      "sizeBytes": 154223651,
+      "sha256": "96fb656603ac8d9644e69ed096d7291f600675c4a491a689b3e8d407cad3b8f5",
+      "signing": {
+        "codeSigned": false,
+        "notarized": false
+      },
+      "source": "local-validation-build",
+      "verifiedBy": "node scripts/verify-release.ts --platform=windows --release-dir=release/task10-windows-validation（任务 10，2026-10-29）"
+    }
+  ],
+  "pendingArtifacts": [
+    {
+      "filename": "mac/UniShell-0.1.0-universal.dmg",
+      "platform": "mac",
+      "architectures": ["universal"],
+      "status": "pending-build",
+      "requirement": "Universal 构建 + Developer ID 签名 + notarization（codesign --verify --deep --strict、xcrun stapler validate）"
+    },
+    {
+      "filename": "mac/UniShell-0.1.0-universal.zip",
+      "platform": "mac",
+      "architectures": ["universal"],
+      "status": "pending-build",
+      "requirement": "Universal 构建 + Developer ID 签名 + notarization"
+    },
+    {
+      "filename": "linux/UniShell-0.1.0-x64.deb",
+      "platform": "linux",
+      "architectures": ["x64"],
+      "status": "pending-build",
+      "requirement": "Linux runner 构建；维护者元数据 UNI_SHELL_LINUX_MAINTAINER 为真实 Name <email>"
+    },
+    {
+      "filename": "linux/UniShell-0.1.0-x64.AppImage",
+      "platform": "linux",
+      "architectures": ["x64"],
+      "status": "pending-build",
+      "requirement": "Linux runner 构建；SHA-256 随产物提供"
+    }
+  ],
+  "verification": {
+    "automated": {
+      "commit": "104fe5c",
+      "executedAt": "2026-10-29T03:26:21Z",
+      "environment": "Ubuntu 22.04.5 LTS x86_64 沙箱，Node v22.23.4",
+      "typecheck": "pass",
+      "lint": "pass",
+      "tests": {
+        "files": 20,
+        "total": 435,
+        "passed": 435,
+        "failed": 0,
+        "durationSec": 44.71
+      }
+    },
+    "realMachineAcceptance": {
+      "windows": "not-executed",
+      "mac": "not-executed",
+      "linuxX11": "not-executed",
+      "linuxWayland": "not-executed",
+      "checklist": "tests/manual/cross-platform-acceptance.md",
+      "report": "docs/release/2026-10-28-v1.0-acceptance-report.md"
+    }
+  },
+  "openIssues": {
+    "p0": [
+      "三平台实机验收未执行",
+      "macOS 产物未构建且未签名公证",
+      "Linux 正式产物（DEB/AppImage）未构建",
+      "CI 打包工作流未运行通过，无官方 release-all-platforms 产物"
+    ],
+    "p1": [
+      "Windows 代码签名证书未配置，Authenticode 未验证",
+      "Linux DEB 维护者元数据需真实 Name <email>",
+      "本地 release/ 目录为验证构建且被并行任务持续改动，哈希以 CI 官方产物为准"
+    ]
+  },
+  "notes": [
+    "artifacts 中两条 Windows 记录来自 2026-10-29 本地验证构建（任务 10），仅证明产物可生成且通过发布验证器，不是正式发布产物。",
+    "正式发布时由 CI aggregate job 执行 npm run verify:release 生成权威 release-manifest.json，并以其替换本文件中的 artifacts 与 pendingArtifacts。",
+    "配置策略：所有平台升级不得覆盖用户配置；发布验证不得创建、替换或覆盖活跃的 config.json。"
+  ]
+}

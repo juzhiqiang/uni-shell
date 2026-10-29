@@ -17,7 +17,7 @@
 | 08 | 已完成 | Claude | 04、07 | [配置界面与保存流程](08-configuration-ui-save-flow.md) | 本地配置界面和受控重启 |
 | 09 | 已完成 | Claude | 08 | [日志与恢复](09-logging-diagnostics-recovery.md) | 脱敏日志和故障诊断 |
 | 10 | 进行中 | Codex | 01-09（曾获用户提前启动授权） | [跨平台打包和发布验证](10-cross-platform-packaging-release.md) | NSIS/ZIP、DMG/ZIP、DEB/AppImage |
-| 11 | 待开始 | 未分配 | 10 | [三平台验收](11-cross-platform-acceptance.md) | 实机验收报告和发布清单 |
+| 11 | 已阻塞 | Claude | 10 | [三平台验收](11-cross-platform-acceptance.md) | 实机验收报告和发布清单（清单/报告/清单 JSON 草稿已产出，待真实系统执行） |
 
 ## 状态约定
 
