@@ -277,7 +277,7 @@ Linux 桌面未提供托盘协议时，客户端不得崩溃；应记录能力�
 
 | 平台 | 标准安装包 | 便携/绿色包 |
 |---|---|---|
-| Windows | NSIS 当前用户一键安装包（装到 `%LOCALAPPDATA%\Programs\UniShell`，不需要 UAC，不提供目录选择） | ZIP 目录包 |
+| Windows | NSIS 当前用户安装包，允许自定义目录（可选盘符） | ZIP 目录包 |
 | macOS | 签名并公证的 Universal DMG | ZIP 包，`.app` 与 `config.json` 同级 |
 | Linux | DEB | AppImage，`config.json` 与 AppImage 同级 |
 
@@ -300,7 +300,7 @@ Windows 严禁默认安装到 `C:\Program Files`。macOS 包必须通过 Develop
 
 ### 14.2 平台验收
 
-- Windows：当前用户一键安装（不弹 UAC）、任务栏覆盖、开机自启、托盘、全屏/Kiosk、置顶；
+- Windows：当前用户安装（可选安装目录与盘符，不弹 UAC）、任务栏覆盖、开机自启、托盘、全屏/Kiosk、置顶；
 - macOS：Universal 构建、签名公证、菜单栏、登录启动、多显示器、休眠唤醒；
 - Linux：DEB 和 AppImage、GNOME X11/Wayland、XDG 自启、托盘能力降级、多显示器。
 

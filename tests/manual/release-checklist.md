@@ -12,7 +12,7 @@
 ## Windows
 
 - 在 Windows x64 runner 上运行 `npm run build:win`，确认输出一个 NSIS `.exe` 和一个 `.zip`。
-- 安装器为一键安装（oneClick）：双击后一步装到 `%LOCALAPPDATA%\Programs\UniShell`，不弹目录选择、不需要管理员权限，且默认目录不在 `C:\Program Files`。
+- 安装器为向导式安装：保留「选择安装位置」页，可自选盘符与目录；确认无需管理员权限、可选目录不在 `C:\Program Files`，且默认目录为当前用户目录。
 - 安装包图标为正式图标（`resources/icon.ico`）：安装界面、桌面与开始菜单快捷方式均显示该图标，不再是 Electron 默认图标。
 - 在便携目录旁放置有效 `config.json` 后运行 ZIP 包，确认客户端读取该文件。
 - 对已配置安装执行升级，确认安装前的旁置 `config.json` 字节内容不变；检查 `%APPDATA%\UniShell\config.json.install-backup` 不遗留。
