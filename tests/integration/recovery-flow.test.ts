@@ -306,7 +306,10 @@ function createDeps(
     });
 
   const proxy: ProxyPort = {
-    apply: (config: NetworkConfig) => applyProxy(session.session, config),
+    apply: (config: NetworkConfig) =>
+      applyProxy(session.session, config, {
+        fetchPacScript: async () => 'function FindProxyForURL() { return "DIRECT"; }',
+      }),
   };
 
   const configService =
@@ -323,6 +326,7 @@ function createDeps(
     window: fakeWindow.window,
     log: logger,
     proxy,
+    retryRandom: () => 0.5,
     ...overrides,
   };
 
@@ -417,6 +421,111 @@ describe('断网恢复（规格 §7、§14.1）', () => {
 
       vi.advanceTimersByTime(120_000);
       expect(fakeWindow.calls.filter((call) => call === 'reloadMain')).toHaveLength(1);
+
+      await controller.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('提供 probeTarget 时先后台探测，探测失败不重载页面且不重复展示离线页，探测成功后再重载', async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeWindow = createFakeWindow();
+      let reachable = false;
+      fakeWindow.window.probeTarget = vi.fn(async () => {
+        fakeWindow.calls.push(`probeTarget:${String(reachable)}`);
+        return reachable;
+      });
+      const { deps, memory, paths } = createDeps({ fakeWindow, retryRandom: () => 0.5 });
+      writeConfig(memory, paths, {
+        ...baseConfig(),
+        network: { ...baseConfig().network, retryIntervalSec: 10, offlinePageEnabled: true },
+      });
+
+      const controller = new AppController(deps);
+      await controller.start(START_OPTIONS);
+
+      controller.reportLoadFailure({
+        errorCode: -105,
+        errorDescription: 'ERR_NAME_NOT_RESOLVED',
+        isMainFrame: true,
+      });
+      expect(fakeWindow.calls.filter((call) => call === 'showOfflinePage')).toHaveLength(1);
+
+      // 第 1 次退避（10s）：探测不可达，不调用 reloadMain，也不再次加载离线页
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fakeWindow.calls).toContain('probeTarget:false');
+      expect(fakeWindow.calls).not.toContain('reloadMain');
+      expect(fakeWindow.calls.filter((call) => call === 'showOfflinePage')).toHaveLength(1);
+
+      // 第 2 次退避（20s）：网络恢复可达，探测成功后调用 reloadMain
+      reachable = true;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(fakeWindow.calls).toContain('probeTarget:true');
+      expect(fakeWindow.calls).toContain('reloadMain');
+
+      await controller.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('网络恢复事件与系统唤醒立即触发 retryNow，无需等待退避定时器到期', async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeWindow = createFakeWindow();
+      let reachable = false;
+      fakeWindow.window.probeTarget = vi.fn(async () => {
+        fakeWindow.calls.push(`probeTarget:${String(reachable)}`);
+        return reachable;
+      });
+      const power = createFakePowerMonitor();
+      const { deps, memory, paths } = createDeps({
+        fakeWindow,
+        powerMonitor: power.port,
+        retryRandom: () => 0.5,
+      });
+      writeConfig(memory, paths, {
+        ...baseConfig(),
+        network: { ...baseConfig().network, retryIntervalSec: 30, offlinePageEnabled: true },
+      });
+
+      const controller = new AppController(deps);
+      await controller.start(START_OPTIONS);
+
+      controller.reportLoadFailure({
+        errorCode: -106,
+        errorDescription: 'ERR_INTERNET_DISCONNECTED',
+        isMainFrame: true,
+      });
+
+      // 仅过去 2s（远未到 30s 退避），收到网络恢复通知，立即探测并重载
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(fakeWindow.calls).not.toContain('reloadMain');
+
+      reachable = true;
+      controller.reportNetworkOnline();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(fakeWindow.calls).toContain('probeTarget:true');
+      expect(fakeWindow.calls).toContain('reloadMain');
+
+      controller.reportLoadSuccess();
+      fakeWindow.calls.length = 0;
+
+      // 再次断网后，系统休眠唤醒同样立即触发 retryNow
+      controller.reportLoadFailure({
+        errorCode: -106,
+        errorDescription: 'ERR_INTERNET_DISCONNECTED',
+        isMainFrame: true,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      power.emitResume();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(fakeWindow.calls).toContain('probeTarget:true');
+      expect(fakeWindow.calls).toContain('reloadMain');
 
       await controller.shutdown();
     } finally {

@@ -86,6 +86,8 @@ export interface WindowPort {
   reloadMain(): Promise<void>;
   /** 展示本地离线页（规格 §7 的 offlinePageEnabled）；未提供时不展示。 */
   showOfflinePage?(): Promise<void> | void;
+  /** 后台探测目标网址是否可达（规格 §7：先 HEAD 探测再 loadURL）；未提供时直接重载。 */
+  probeTarget?(): Promise<boolean>;
   /** 强制结束无响应的渲染进程（规格 §7）；未提供时只记录日志。 */
   forcefullyCrashRenderer?(): void;
   isMainWindowVisible(): boolean;
@@ -116,6 +118,8 @@ export interface AppControllerDeps {
   /** 电源监听端口；提供时记录休眠/唤醒诊断并在唤醒后重载页面（规格 §14.1）。 */
   powerMonitor?: PowerMonitorPort;
   singleInstance?: SingleInstanceHandle;
+  /** 可注入随机源（返回值 ∈ [0, 1]），用于测试重试退避抖动。 */
+  retryRandom?: () => number;
   log?: Logger;
 }
 
@@ -355,6 +359,10 @@ export class AppController {
     this.crashHistory = [];
     this.crashRecoveryStopped = false;
     this.clearCrashReloadTimer();
+    if (this.retryController?.isRetrying) {
+      this.retryController.retryNow();
+      return;
+    }
     await this.deps.window.reloadMain();
   }
 
@@ -453,9 +461,9 @@ export class AppController {
     this.retryController = new RetryController({
       retryIntervalSec: config.network.retryIntervalSec,
       offlinePageEnabled: config.network.offlinePageEnabled,
+      random: this.deps.retryRandom,
       onRetry: () => {
-        (this.deps.log ?? noopLogger).info('retry-attempt', { attempt: this.loadFailures });
-        void this.deps.window.reloadMain();
+        void this.performRetryAttempt();
       },
       showOfflinePage: () => {
         (this.deps.log ?? noopLogger).info('offline-page-shown');
@@ -463,6 +471,46 @@ export class AppController {
       },
     });
     this.retryController.start();
+  }
+
+  /**
+   * 执行一次断网重试：若提供 `probeTarget`，先后台 HEAD 探测可达性，
+   * 探测成功后再调用 `reloadMain()`，避免离线页反复重载闪烁（规格 v2.1.3 §7）。
+   */
+  private async performRetryAttempt(): Promise<void> {
+    if (this.state === 'shutting-down' || this.state === 'stopped') return;
+
+    const log = this.deps.log ?? noopLogger;
+    const attempt = this.retryController?.attemptCount ?? this.loadFailures;
+    log.info('retry-attempt', { attempt });
+
+    if (this.deps.window.probeTarget) {
+      try {
+        const reachable = await this.deps.window.probeTarget();
+        if (!reachable) {
+          log.info('retry-probe-failed', { attempt });
+          return;
+        }
+      } catch (error) {
+        log.info('retry-probe-failed', { attempt, message: describeError(error) });
+        return;
+      }
+    }
+
+    if (this.currentState === 'shutting-down' || this.currentState === 'stopped') return;
+    await this.deps.window.reloadMain();
+  }
+
+  /**
+   * 规格 §7：检测到网络恢复在线时，若正处于断网重试周期则取消排队等待并立即重试。
+   */
+  reportNetworkOnline(): void {
+    if (this.state !== 'running') return;
+    if (!this.retryController?.isRetrying) return;
+
+    const log = this.deps.log ?? noopLogger;
+    log.info('network-online-retry');
+    this.retryController.retryNow();
   }
 
   /**

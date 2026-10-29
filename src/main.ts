@@ -10,6 +10,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  net,
   powerMonitor,
   screen,
   session,
@@ -513,6 +514,23 @@ function createWindowPortAdapter(
       if (main !== null) await loadOfflinePage(main);
     },
 
+    async probeTarget() {
+      const current = configService.current();
+      if (current === undefined) return false;
+      if (!net.isOnline()) return false;
+      try {
+        // 规格 §7、§11：经远程会话分区的 Chromium 网络栈发起 HEAD 探测，
+        // 确保遵循同一分区的接口代理、TLS 与凭据策略。
+        const response = await session.fromPartition(REMOTE_PARTITION).fetch(current.targetUrl, {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(current.network.requestTimeoutSec * 1000),
+        });
+        return response.status > 0;
+      } catch {
+        return false;
+      }
+    },
+
     forcefullyCrashRenderer() {
       // 规格 §7：无响应渲染进程由控制器判定后强制结束；随后 render-process-gone
       // 会接手，按崩溃窗口决定自动重载或离线页降级。窗口不存在时无需处理。
@@ -644,6 +662,18 @@ async function bootstrap(): Promise<void> {
   });
 
   const windowPort = createWindowPortAdapter(windowManager, configService);
+
+  // 规格 §7：轮询检测系统网络从离线恢复为在线，触发控制器立即重试。
+  let wasOnline = net.isOnline();
+  const onlinePollTimer = setInterval(() => {
+    const online = net.isOnline();
+    if (!wasOnline && online) {
+      activeController?.reportNetworkOnline();
+    }
+    wasOnline = online;
+  }, 2_000);
+  onlinePollTimer.unref();
+  app.once('will-quit', () => clearInterval(onlinePollTimer));
 
   const controller = new AppController({
     configService,
