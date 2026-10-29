@@ -154,6 +154,27 @@ export function isAllowedOrigin(value: string, allowedOrigins: readonly string[]
   return allowedOrigins.some((allowed) => normalizeOrigin(allowed) === origin);
 }
 
+/**
+ * 解析主窗口生效的安全策略：
+ * 自动将目标网址（targetUrl）自身的源（scheme://host[:port]）作为基础授权源，
+ * 避免用户未手动填写 allowedOrigins 时，站内页面跳转、单页应用路由或同源超链接被误当作外链拦截。
+ */
+export function resolveEffectiveSecurityPolicy(
+  security: SecurityConfig,
+  targetUrl?: string,
+): SecurityConfig {
+  if (!targetUrl || targetUrl.trim().length === 0) return security;
+  const targetOrigin = normalizeOrigin(targetUrl);
+  if (targetOrigin === null) return security;
+  if (security.allowedOrigins.some((allowed) => normalizeOrigin(allowed) === targetOrigin)) {
+    return security;
+  }
+  return {
+    ...security,
+    allowedOrigins: [targetOrigin, ...security.allowedOrigins],
+  };
+}
+
 /** 判断地址是否可以交给系统默认浏览器。 */
 export function isExternallyOpenableUrl(value: string): boolean {
   const url = parseUrl(value);

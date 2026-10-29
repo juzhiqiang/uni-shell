@@ -735,9 +735,44 @@ describe('主窗口显示与安全策略更新', () => {
     expect(harness.manager.showMainWindow()).toBe(false);
   });
 
+  it('主窗口自动放行 targetUrl 自身的源，即使 allowedOrigins 为空', async () => {
+    const harness = createManager();
+    const main = await harness.manager.createMainWindow(
+      appConfig({
+        targetUrl: 'https://juejin.cn/?utm_source=gold',
+        security: {
+          allowedOrigins: [],
+          allowExternalLinks: true,
+          allowPopups: false,
+          allowDownloads: false,
+        },
+      }),
+    );
+
+    // 本站链接（同源）放行，不阻止、不外跳
+    expect(main.webContents.emitNavigate('https://juejin.cn/post/123').prevented).toBe(false);
+    expect(main.webContents.emitNavigate('https://juejin.cn/pins').prevented).toBe(false);
+
+    // 跨域外链拦截并外带到系统浏览器
+    expect(main.webContents.emitNavigate('https://github.com/someone').prevented).toBe(true);
+    expect(harness.openExternal).toHaveBeenCalledWith('https://github.com/someone');
+  });
+
   it('updateSecurity 热替换主窗口的授权源', async () => {
     const harness = createManager();
-    const main = await harness.manager.createMainWindow(appConfig());
+    const main = await harness.manager.createMainWindow(
+      appConfig({
+        targetUrl: 'https://app.example.com/',
+        security: {
+          allowedOrigins: ['https://partner.example.com'],
+          allowExternalLinks: false,
+          allowPopups: false,
+          allowDownloads: false,
+        },
+      }),
+    );
+
+    expect(main.webContents.emitNavigate('https://partner.example.com/').prevented).toBe(false);
 
     harness.manager.updateSecurity({
       allowedOrigins: [],
@@ -746,7 +781,10 @@ describe('主窗口显示与安全策略更新', () => {
       allowDownloads: false,
     });
 
-    expect(main.webContents.emitNavigate('https://app.example.com/').prevented).toBe(true);
+    // 替换后第三方源被阻止
+    expect(main.webContents.emitNavigate('https://partner.example.com/').prevented).toBe(true);
+    // targetUrl 本身仍然自动放行
+    expect(main.webContents.emitNavigate('https://app.example.com/dashboard').prevented).toBe(false);
   });
 
   it('导航守卫决策通过事件上报', async () => {

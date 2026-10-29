@@ -24,6 +24,7 @@ import type { MappedWindowLevel, PlatformCapabilities } from '../platform/platfo
 import {
   createLocalConfigSecurityPolicy,
   installNavigationGuards,
+  resolveEffectiveSecurityPolicy,
   secureRemoteWebPreferences,
   type GuardEvent,
   type GuardWebContents,
@@ -241,6 +242,7 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
   private readonly guards = new Map<T, NavigationGuardHandle>();
   private security: SecurityConfig = createLocalConfigSecurityPolicy();
   private windowPolicy: { window: WindowConfig; capabilities: PlatformCapabilities } | null = null;
+  private targetUrl: string | undefined;
   private quitting = false;
   private pendingQuit = false;
 
@@ -263,11 +265,14 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
    * `main-load-failed` 事件上报，由网络重试与离线页（Task 5）接管。
    */
   async createMainWindow(config: AppConfig): Promise<T> {
-    this.security = config.security;
+    this.targetUrl = config.targetUrl;
+    const effectiveSecurity = resolveEffectiveSecurityPolicy(config.security, config.targetUrl);
+    this.security = effectiveSecurity;
 
     const existing = this.getMainWindow();
     if (existing !== null) {
       this.applyWindowPolicy(config.window, this.deps.capabilities);
+      this.updateSecurity(config.security, config.targetUrl);
       existing.show();
       existing.focus();
       this.emit({ type: 'main-window-reused' });
@@ -286,7 +291,7 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     });
     this.mainWindow = window;
 
-    this.installGuards(window, config.security, 'main', config.window.mode === 'kiosk');
+    this.installGuards(window, effectiveSecurity, 'main', config.window.mode === 'kiosk');
     this.applyWindowPolicy(config.window, this.deps.capabilities);
     this.registerMainWindowLifecycle(window);
     this.emit({ type: 'main-window-created' });
@@ -382,11 +387,13 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
   }
 
   /** 配置保存后热替换主窗口的授权源等安全策略。 */
-  updateSecurity(security: SecurityConfig): void {
-    this.security = security;
+  updateSecurity(security: SecurityConfig, targetUrl?: string): void {
+    if (targetUrl !== undefined) this.targetUrl = targetUrl;
+    const effectiveSecurity = resolveEffectiveSecurityPolicy(security, this.targetUrl);
+    this.security = effectiveSecurity;
     const main = this.getMainWindow();
     const guards = main === null ? undefined : this.guards.get(main);
-    guards?.update(security);
+    guards?.update(effectiveSecurity);
   }
 
   /** 退出流程开始：之后的窗口关闭不再被 close-to-hide 拦截。 */

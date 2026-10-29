@@ -12,6 +12,7 @@ import {
   isExternallyOpenableUrl,
   normalizeOrigin,
   readDownloadUrl,
+  resolveEffectiveSecurityPolicy,
   secureRemoteWebPreferences,
   type GuardDownloadItem,
   type GuardEvent,
@@ -506,5 +507,37 @@ describe('本地配置窗口策略', () => {
       allowPopups: false,
       allowDownloads: false,
     });
+  });
+});
+
+describe('resolveEffectiveSecurityPolicy', () => {
+  it('未提供 targetUrl 或为空时原样返回', () => {
+    const base = security({ allowedOrigins: ['https://sso.example.com'] });
+    expect(resolveEffectiveSecurityPolicy(base, undefined)).toBe(base);
+    expect(resolveEffectiveSecurityPolicy(base, '')).toBe(base);
+  });
+
+  it('自动将 targetUrl 提取出的裸源加入 allowedOrigins', () => {
+    const base = security({ allowedOrigins: [] });
+    const resolved = resolveEffectiveSecurityPolicy(base, 'https://juejin.cn/?utm_source=gold_browser_extension');
+    expect(resolved.allowedOrigins).toEqual(['https://juejin.cn']);
+  });
+
+  it('保留端口与协议，忽略路径、查询串与 hash', () => {
+    const base = security({ allowedOrigins: ['https://api.internal:8443'] });
+    const resolved = resolveEffectiveSecurityPolicy(base, 'https://oa.internal:8443/app/dashboard?user=1#top');
+    expect(resolved.allowedOrigins).toEqual(['https://oa.internal:8443', 'https://api.internal:8443']);
+  });
+
+  it('已包含同源时不再重复添加', () => {
+    const base = security({ allowedOrigins: ['https://juejin.cn'] });
+    const resolved = resolveEffectiveSecurityPolicy(base, 'https://juejin.cn/post/123');
+    expect(resolved.allowedOrigins).toEqual(['https://juejin.cn']);
+  });
+
+  it('targetUrl 非法或非 http/https 时安全忽略', () => {
+    const base = security({ allowedOrigins: [] });
+    expect(resolveEffectiveSecurityPolicy(base, 'javascript:void(0)').allowedOrigins).toEqual([]);
+    expect(resolveEffectiveSecurityPolicy(base, 'file:///tmp/index.html').allowedOrigins).toEqual([]);
   });
 });
