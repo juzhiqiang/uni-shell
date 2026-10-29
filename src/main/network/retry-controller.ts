@@ -5,6 +5,11 @@ export type LoadFailureDetails = Pick<Electron.DidFailLoadEvent, 'errorCode' | '
   httpResponseCode?: number;
 };
 
+/** Navigation cancellations are expected during redirects and user-initiated navigation. */
+export function isIgnorableLoadFailure(details: LoadFailureDetails): boolean {
+  return details.errorCode === -3;
+}
+
 const dnsErrorCodes = new Set([-105, -137, -800, -801, -802, -803, -804, -805, -806, -807, -808, -809]);
 const connectionErrorCodes = new Set([-101, -102, -103, -104, -106, -109, -111, -118]);
 const tlsErrorCodes = new Set([-107, -110, -113, -115, -117]);
@@ -62,7 +67,7 @@ export class RetryController {
   }
 
   onLoadFailed(details: LoadFailureDetails): void {
-    if (!this.running || !details.isMainFrame) return;
+    if (!this.running || !details.isMainFrame || isIgnorableLoadFailure(details)) return;
 
     if (this.offlinePageEnabled) this.showOfflinePage();
     this.scheduleRetry();

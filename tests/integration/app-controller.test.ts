@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createDefaultConfig } from '../../src/main/config/config-schema';
 import type { ConfigLoadResult } from '../../src/main/config/config-store';
@@ -40,6 +40,8 @@ const CAPABILITIES: PlatformCapabilities = {
   loginItem: { supported: true, mechanism: 'xdg-autostart' },
   displaySelection: { available: true, count: 1 },
 };
+
+afterEach(() => vi.useRealTimers());
 
 /** 记录调用的假窗口端口。 */
 function createFakeWindow() {
@@ -163,7 +165,7 @@ function loadedResult(config = createDefaultConfig('https://example.com')): Conf
 function createDeps(overrides: Partial<AppControllerDeps> = {}) {
   const fakeWindow = createFakeWindow();
   const fakeDelay = createFakeDelay();
-  const logs: Array<{ level: string; event: string }> = [];
+  const logs: Array<{ level: string; event: string; data?: unknown }> = [];
 
   const deps: AppControllerDeps = {
     resolvePaths: () => PATHS,
@@ -172,9 +174,10 @@ function createDeps(overrides: Partial<AppControllerDeps> = {}) {
     window: fakeWindow.window,
     delay: fakeDelay.delay,
     log: {
-      info: (event) => logs.push({ level: 'info', event }),
-      warn: (event) => logs.push({ level: 'warn', event }),
-      error: (event) => logs.push({ level: 'error', event }),
+      info: (event, data) => logs.push({ level: 'info', event, data }),
+      warn: (event, data) => logs.push({ level: 'warn', event, data }),
+      error: (event, data) => logs.push({ level: 'error', event, data }),
+      debug: (event, data) => logs.push({ level: 'debug', event, data }),
       close: async () => {},
     },
     ...overrides,
@@ -245,6 +248,45 @@ describe('AppController 启动', () => {
     await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
 
     expect(fakeWindow.calls.filter((call) => call === 'createMainWindow')).toHaveLength(1);
+  });
+});
+
+describe('AppController 页面加载失败', () => {
+  it('忽略主框架 ERR_ABORTED，不展示离线页、不重试、不增加失败计数并记录 debug', async () => {
+    vi.useFakeTimers();
+    const { deps, fakeWindow, logs } = createDeps();
+    fakeWindow.window.showOfflinePage = vi.fn(() => fakeWindow.calls.push('showOfflinePage'));
+    const controller = new AppController(deps);
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+    fakeWindow.calls.length = 0;
+    logs.length = 0;
+
+    controller.reportLoadFailure({ errorCode: -3, errorDescription: 'ERR_ABORTED', isMainFrame: true });
+    await vi.advanceTimersByTimeAsync(3000);
+    controller.reportLoadSuccess();
+
+    expect(fakeWindow.calls).not.toContain('showOfflinePage');
+    expect(fakeWindow.calls).not.toContain('reloadMain');
+    expect(logs).toContainEqual(expect.objectContaining({ level: 'debug', event: 'page-load-aborted' }));
+    expect(logs).not.toContainEqual(expect.objectContaining({ level: 'warn', event: 'page-load-failed' }));
+    expect(logs).toContainEqual({ level: 'info', event: 'page-load-succeeded', data: { recovered: false } });
+    await controller.shutdown();
+    vi.useRealTimers();
+  });
+
+  it('仍按离线恢复流程处理其他主框架错误', async () => {
+    const { deps, fakeWindow, logs } = createDeps();
+    fakeWindow.window.showOfflinePage = vi.fn(() => fakeWindow.calls.push('showOfflinePage'));
+    const controller = new AppController(deps);
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+    fakeWindow.calls.length = 0;
+    logs.length = 0;
+
+    controller.reportLoadFailure({ errorCode: -105, errorDescription: 'ERR_NAME_NOT_RESOLVED', isMainFrame: true });
+
+    expect(fakeWindow.calls).toContain('showOfflinePage');
+    expect(logs).toContainEqual(expect.objectContaining({ level: 'warn', event: 'page-load-failed' }));
+    await controller.shutdown();
   });
 });
 

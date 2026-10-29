@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { classifyLoadFailure, RetryController } from '../../../src/main/network/retry-controller';
+import { classifyLoadFailure, isIgnorableLoadFailure, RetryController } from '../../../src/main/network/retry-controller';
 
 function failure(
   errorCode: number,
@@ -35,6 +35,13 @@ describe('classifyLoadFailure', () => {
   });
 });
 
+describe('isIgnorableLoadFailure', () => {
+  it('recognizes Chromium ERR_ABORTED', () => {
+    expect(isIgnorableLoadFailure(failure(-3))).toBe(true);
+    expect(isIgnorableLoadFailure(failure(-105))).toBe(false);
+  });
+});
+
 describe('RetryController', () => {
   afterEach(() => vi.useRealTimers());
 
@@ -48,6 +55,21 @@ describe('RetryController', () => {
 
     expect(onRetry).not.toHaveBeenCalled();
     expect(showOfflinePage).not.toHaveBeenCalled();
+    controller.stop();
+  });
+
+  it('does not show offline page or schedule retries for ERR_ABORTED', () => {
+    vi.useFakeTimers();
+    const onRetry = vi.fn();
+    const showOfflinePage = vi.fn();
+    const controller = new RetryController({ retryIntervalSec: 3, onRetry, showOfflinePage });
+    controller.start();
+
+    controller.onLoadFailed(failure(-3));
+    vi.advanceTimersByTime(3000);
+
+    expect(showOfflinePage).not.toHaveBeenCalled();
+    expect(onRetry).not.toHaveBeenCalled();
     controller.stop();
   });
 

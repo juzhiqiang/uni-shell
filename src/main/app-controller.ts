@@ -19,7 +19,12 @@ import type { NetworkConfig } from './config/config-types';
 import type { ConfigLoadResult } from './config/config-store';
 import type { Logger } from './logging/logger';
 import type { ProxyApplyResult } from './network/proxy-manager';
-import { RetryController, classifyLoadFailure, type LoadFailureDetails } from './network/retry-controller';
+import {
+  RetryController,
+  classifyLoadFailure,
+  isIgnorableLoadFailure,
+  type LoadFailureDetails,
+} from './network/retry-controller';
 import type { ResolveConfigPathsOptions, ResolvedConfigPaths } from './platform/config-paths';
 import type { PlatformCapabilities } from './platform/platform-adapter';
 import { detectLaunchContext, type LaunchContext, type LaunchSource } from './instance/single-instance';
@@ -451,6 +456,14 @@ export class AppController {
     if (!details.isMainFrame) return;
 
     const log = this.deps.log ?? noopLogger;
+    if (isIgnorableLoadFailure(details)) {
+      log.debug?.('page-load-aborted', {
+        errorCode: details.errorCode,
+        errorDescription: details.errorDescription,
+      });
+      return;
+    }
+
     this.loadFailures += 1;
     log.warn('page-load-failed', {
       failureKind: classifyLoadFailure(details),
