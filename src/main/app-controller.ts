@@ -11,6 +11,10 @@
  * 本模块负责把启动、配置、代理、重试、窗口策略、电源与关闭事件接到日志上，
  * 并在关闭时停止重试定时器、移除电源监听、刷新日志。
  *
+ * 进程级恢复（Task 15）：远程页面崩溃、OOM 或被外部结束时不产生 `did-fail-load`，
+ * 重试控制器不会被触发，因此另由崩溃窗口（`network/crash-guard.ts`）决策自动重载
+ * 或离线页降级；渲染进程无响应超过阈值后强制结束，再交给同一套崩溃恢复流程。
+ *
  * 依赖方向：控制器依赖平台实现（startup、tray、platform、network），平台实现不得反向依赖本模块。
  */
 
@@ -18,6 +22,11 @@ import type { AppConfig } from './config/config-schema';
 import type { NetworkConfig } from './config/config-types';
 import type { ConfigService } from './config/config-service';
 import type { Logger } from './logging/logger';
+import {
+  DEFAULT_CRASH_WINDOW_MS,
+  decideCrashRecovery,
+  isRecoverableRendererExit,
+} from './network/crash-guard';
 import type { ProxyApplyResult } from './network/proxy-manager';
 import {
   RetryController,
@@ -77,6 +86,8 @@ export interface WindowPort {
   reloadMain(): Promise<void>;
   /** 展示本地离线页（规格 §7 的 offlinePageEnabled）；未提供时不展示。 */
   showOfflinePage?(): Promise<void> | void;
+  /** 强制结束无响应的渲染进程（规格 §7）；未提供时只记录日志。 */
+  forcefullyCrashRenderer?(): void;
   isMainWindowVisible(): boolean;
   isConfigWindowOpen(): boolean;
   focusConfigWindow(): void;
@@ -122,6 +133,14 @@ const noopLogger: Logger = {
   close: async () => {},
 };
 
+/**
+ * 规格 §7：渲染进程无响应超过该时长后强制结束渲染进程。
+ *
+ * 取常量而不进配置 schema：无响应恢复是常驻/Kiosk 场景的保底行为，
+ * 现场不需要按部署调整；需要变更时随版本发布，避免配置面继续扩大。
+ */
+export const UNRESPONSIVE_CRASH_DELAY_MS = 10_000;
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -161,6 +180,10 @@ export class AppController {
   private started = false;
   private retryController: RetryController | undefined;
   private loadFailures = 0;
+  /** 崩溃窗口内的渲染进程崩溃时间戳（规格 §7 的 60 秒 / 3 次判定）。 */
+  private crashHistory: number[] = [];
+  private crashReloadTimer: ReturnType<typeof setTimeout> | undefined;
+  private unresponsiveTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly deps: AppControllerDeps) {}
 
@@ -325,6 +348,10 @@ export class AppController {
   }
 
   private async reloadMain(): Promise<void> {
+    // 用户显式触发（托盘「重新加载网页」、唤醒恢复）即恢复自动重载资格：
+    // 清空崩溃窗口与挂起的崩溃重载，重新获得完整配额（规格 §7）。
+    this.crashHistory = [];
+    this.clearCrashReloadTimer();
     await this.deps.window.reloadMain();
   }
 
@@ -468,8 +495,111 @@ export class AppController {
     const log = this.deps.log ?? noopLogger;
     const recovered = this.loadFailures > 0;
     this.loadFailures = 0;
+    // 页面能正常加载说明进程级故障已恢复，崩溃窗口重新累计（规格 §7）。
+    this.crashHistory = [];
     log.info('page-load-succeeded', { recovered });
     this.retryController?.onLoadSucceeded();
+  }
+
+  /**
+   * 规格 §7：渲染进程异常退出（崩溃、内存不足被结束、被外部结束）后的自动恢复。
+   *
+   * 崩溃不产生 `did-fail-load`，重试控制器不会被触发，因此由崩溃窗口独立决策：
+   * 窗口内未达阈值按 `retryIntervalSec` 自动重载；达到阈值改为展示离线页并停止
+   * 自动重载，直到用户从托盘手动重载或加载成功后恢复。`clean-exit` 属于预期退出，
+   * 只记录诊断，不触发恢复。
+   */
+  reportRendererGone(details: { reason: string; exitCode: number }): void {
+    const log = this.deps.log ?? noopLogger;
+    log.warn('renderer-gone', { reason: details.reason, exitCode: details.exitCode });
+
+    if (!isRecoverableRendererExit(details.reason)) {
+      log.info('renderer-gone-ignored', { reason: details.reason });
+      return;
+    }
+
+    const config = this.config;
+    // 配置不可用（驻留配置界面）时没有恢复目标，只保留诊断。
+    if (!config) return;
+
+    const decision = decideCrashRecovery(this.crashHistory, Date.now());
+    this.crashHistory = decision.history;
+
+    if (decision.action === 'offline') {
+      log.error('renderer-crash-limit', {
+        crashes: this.crashHistory.length,
+        windowMs: DEFAULT_CRASH_WINDOW_MS,
+      });
+      // 停止自动重载：挂起的重载与后续崩溃都不再触发，等待用户或加载成功。
+      this.clearCrashReloadTimer();
+      if (config.network.offlinePageEnabled) {
+        log.info('offline-page-shown');
+        void this.deps.window.showOfflinePage?.();
+      }
+      return;
+    }
+
+    log.info('renderer-recovery', {
+      action: 'reload',
+      crashes: this.crashHistory.length,
+      retryInSec: config.network.retryIntervalSec,
+    });
+    this.scheduleCrashReload(config.network.retryIntervalSec);
+  }
+
+  /**
+   * 规格 §7：渲染进程无响应。
+   *
+   * 持续超过 `UNRESPONSIVE_CRASH_DELAY_MS` 后强制结束该渲染进程；随后
+   * `render-process-gone` 会接管，按崩溃恢复流程重载。重复事件只保留一个计时器，
+   * 避免无响应页面永远等不到强制结束。
+   */
+  reportUnresponsive(): void {
+    const log = this.deps.log ?? noopLogger;
+    log.warn('renderer-unresponsive', { forceCrashInSec: UNRESPONSIVE_CRASH_DELAY_MS / 1000 });
+
+    this.clearUnresponsiveTimer();
+    this.unresponsiveTimer = setTimeout(() => {
+      this.unresponsiveTimer = undefined;
+      if (this.state === 'shutting-down' || this.state === 'stopped') return;
+
+      log.warn('renderer-force-crashed', { reason: 'unresponsive' });
+      this.deps.window.forcefullyCrashRenderer?.();
+    }, UNRESPONSIVE_CRASH_DELAY_MS);
+  }
+
+  /** 渲染进程恢复响应：取消挂起的强制结束，页面无需重载。 */
+  reportResponsive(): void {
+    if (!this.unresponsiveTimer) return;
+
+    this.clearUnresponsiveTimer();
+    (this.deps.log ?? noopLogger).info('renderer-responsive');
+  }
+
+  /**
+   * 安排一次崩溃重载。
+   *
+   * 不重置崩溃窗口：连续崩溃必须累计到阈值才会降级为离线页。崩溃间隔短于重试
+   * 间隔时重新计时，避免刚崩溃就又发起重载。
+   */
+  private scheduleCrashReload(retryIntervalSec: number): void {
+    this.clearCrashReloadTimer();
+    this.crashReloadTimer = setTimeout(() => {
+      this.crashReloadTimer = undefined;
+      if (this.state === 'shutting-down' || this.state === 'stopped') return;
+
+      void this.deps.window.reloadMain();
+    }, retryIntervalSec * 1000);
+  }
+
+  private clearCrashReloadTimer(): void {
+    if (this.crashReloadTimer) clearTimeout(this.crashReloadTimer);
+    this.crashReloadTimer = undefined;
+  }
+
+  private clearUnresponsiveTimer(): void {
+    if (this.unresponsiveTimer) clearTimeout(this.unresponsiveTimer);
+    this.unresponsiveTimer = undefined;
   }
 
   /** 规格 §12、§14.1：记录休眠/唤醒；唤醒后网络环境可能已变化，主动重载页面。 */
@@ -603,6 +733,9 @@ export class AppController {
     this.cancelDelay();
     this.retryController?.stop();
     this.retryController = undefined;
+    // Task 15：崩溃重载与无响应强制结束的定时器同样必须可取消。
+    this.clearCrashReloadTimer();
+    this.clearUnresponsiveTimer();
     this.shortcutHandle?.dispose();
     this.shortcutHandle = undefined;
     this.trayHandle?.destroy();

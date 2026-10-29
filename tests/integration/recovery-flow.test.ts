@@ -133,6 +133,9 @@ function createFakeWindow() {
     async showOfflinePage() {
       calls.push('showOfflinePage');
     },
+    forcefullyCrashRenderer() {
+      calls.push('forcefullyCrashRenderer');
+    },
   };
 
   return { window, calls };
@@ -602,6 +605,134 @@ describe('休眠唤醒诊断（规格 §12、§14.1）', () => {
     fakeWindow.calls.length = 0;
     power.emitResume();
     expect(fakeWindow.calls).not.toContain('reloadMain');
+  });
+});
+
+describe('渲染进程崩溃与无响应恢复（规格 §7、§12）', () => {
+  it('崩溃后按 retryIntervalSec 重载，并把 reason 与 exitCode 记入日志', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, memory, fakeWindow, paths } = createDeps();
+      writeConfig(memory, paths, {
+        ...baseConfig(),
+        network: { ...baseConfig().network, retryIntervalSec: 5 },
+      });
+
+      const controller = new AppController(deps);
+      await controller.start(START_OPTIONS);
+      fakeWindow.calls.length = 0;
+
+      controller.reportRendererGone({ reason: 'oom', exitCode: 3 });
+
+      await settleLog();
+      expect(logData(memory, 'renderer-gone')).toMatchObject({ reason: 'oom', exitCode: 3 });
+      expect(logEvents(memory)).toContain('renderer-recovery');
+      expect(fakeWindow.calls).not.toContain('reloadMain');
+
+      vi.advanceTimersByTime(5_000);
+      expect(fakeWindow.calls).toContain('reloadMain');
+      await settleLog();
+      expect(logData(memory, 'renderer-recovery')).toMatchObject({ action: 'reload', retryInSec: 5 });
+
+      await controller.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('60 秒内连续崩溃 3 次后展示离线页、停止自动重载并记录降级', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, memory, fakeWindow, paths } = createDeps();
+      writeConfig(memory, paths, {
+        ...baseConfig(),
+        network: { ...baseConfig().network, retryIntervalSec: 5 },
+      });
+
+      const controller = new AppController(deps);
+      await controller.start(START_OPTIONS);
+
+      for (const exitCode of [1, 2, 3]) {
+        controller.reportRendererGone({ reason: 'crashed', exitCode });
+        vi.advanceTimersByTime(5_000);
+      }
+
+      await settleLog();
+      expect(fakeWindow.calls).toContain('showOfflinePage');
+      expect(logEvents(memory)).toContain('renderer-crash-limit');
+      expect(logData(memory, 'renderer-crash-limit')).toMatchObject({ crashes: 3, windowMs: 60_000 });
+
+      fakeWindow.calls.length = 0;
+      vi.advanceTimersByTime(120_000);
+      expect(fakeWindow.calls).not.toContain('reloadMain');
+
+      await controller.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('无响应超时后强制结束渲染进程，恢复响应则取消强制结束', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, memory, fakeWindow, paths } = createDeps();
+      writeConfig(memory, paths, baseConfig());
+
+      const controller = new AppController(deps);
+      await controller.start(START_OPTIONS);
+
+      controller.reportUnresponsive();
+      await settleLog();
+      expect(logData(memory, 'renderer-unresponsive')).toMatchObject({ forceCrashInSec: 10 });
+      vi.advanceTimersByTime(9_999);
+      expect(fakeWindow.calls).not.toContain('forcefullyCrashRenderer');
+
+      vi.advanceTimersByTime(1);
+      expect(fakeWindow.calls).toContain('forcefullyCrashRenderer');
+      await settleLog();
+      expect(logEvents(memory)).toContain('renderer-force-crashed');
+
+      // 强制结束与崩溃恢复串成一条链路：随后按 retryIntervalSec 重载。
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
+      vi.advanceTimersByTime(3_000);
+      expect(fakeWindow.calls).toContain('reloadMain');
+
+      // 恢复响应的渲染进程不再被强制结束。
+      controller.reportUnresponsive();
+      controller.reportResponsive();
+      await settleLog();
+      expect(logEvents(memory)).toContain('renderer-responsive');
+      vi.advanceTimersByTime(120_000);
+      expect(fakeWindow.calls.filter((call) => call === 'forcefullyCrashRenderer')).toHaveLength(1);
+
+      await controller.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('关闭后不再因崩溃或无响应重载页面', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, memory, fakeWindow, paths } = createDeps();
+      writeConfig(memory, paths, baseConfig());
+
+      const controller = new AppController(deps);
+      await controller.start(START_OPTIONS);
+
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
+      controller.reportUnresponsive();
+      await controller.shutdown();
+
+      fakeWindow.calls.length = 0;
+      vi.advanceTimersByTime(120_000);
+
+      expect(fakeWindow.calls).not.toContain('reloadMain');
+      expect(fakeWindow.calls).not.toContain('forcefullyCrashRenderer');
+      expect(logEvents(memory)).toContain('shutdown');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
