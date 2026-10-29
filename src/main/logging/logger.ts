@@ -14,9 +14,14 @@
  *   避免在 Linux 上测试 Windows 路径时被当成相对路径；
  * - 每条记录一行 JSON，自带版本与平台上下文，单行即可还原现场环境；
  * - 脱敏在写入前统一执行，调用方无法绕过；
- * - 写入顺序经队列保证；`close()` 刷新全部挂起写入，供退出流程 await。
+ * - 写入先进入内存缓冲，按 200 ms 或累计 50 条批量刷新到长驻追加流，跨自然日轮换
+ *   写入口；`flush()` 同步摘缓冲后再把写入链入串行队列，顺序由队列保证；
+ * - `close()` 刷新全部挂起写入并等待流 `finish`，供退出流程 await；
+ * - 注入面未提供 `openAppendStream` 时回退为按批 `appendFile`（即写即走）；
+ * - 初始化、打开写入口、单批写入或流出错一律降级为静默丢弃，绝不抛给调用方。
  */
 
+import { createWriteStream } from 'node:fs';
 import { appendFile, mkdir, readdir, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { posix, win32 } from 'node:path';
@@ -32,6 +37,12 @@ export const DEFAULT_RETENTION_DAYS = 14;
 
 /** 日志文件名前缀；按天滚动为 `<prefix>-YYYY-MM-DD.log`。 */
 export const LOG_FILE_PREFIX = 'uni-shell';
+
+/** 批量刷新间隔（ms）；刷新定时器 unref，不阻止进程退出。 */
+export const LOG_FLUSH_INTERVAL_MS = 200;
+
+/** 单批最大条数；达到即刷新，不等定时器。 */
+export const LOG_FLUSH_MAX_LINES = 50;
 
 /** 脱敏占位符。 */
 const REDACTED = '[REDACTED]';
@@ -56,12 +67,41 @@ export interface Logger {
   close(): Promise<void>;
 }
 
+/**
+ * 追加写入口；由 `fs.createWriteStream(path, { flags: 'a' })` 适配而来。
+ *
+ * `write` 不得同步抛出（错误经 `onError` 异步上报）；`end()` 返回的 Promise 在流
+ * `finish` 后 resolve、出错后 reject，重复调用返回同一个 Promise。
+ */
+export interface LogStream {
+  write(chunk: string): void;
+  end(): Promise<void>;
+  onError(listener: (error: unknown) => void): void;
+}
+
 /** 日志文件系统能力；测试注入内存实现。 */
 export interface LogFileSystem {
   mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   appendFile(path: string, data: string): Promise<void>;
+  /**
+   * 打开（必要时创建）追加写入口。未提供时写入方回退为按批 `appendFile`：
+   * 即写即走、不做定时批量，供未实现流的注入面使用。
+   */
+  openAppendStream?(path: string): LogStream;
   readdir(path: string): Promise<string[]>;
   unlink(path: string): Promise<void>;
+}
+
+/** 缓冲条目；保留事件名，整批失败时用于归属上报。 */
+interface LogEntry {
+  event: string;
+  line: string;
+}
+
+/** 写入出口：流式（批量、跨天轮换）或 appendFile 回写；`LogStream` 结构上满足它。 */
+interface LogSink {
+  write(chunk: string): void | Promise<void>;
+  end(): Promise<void>;
 }
 
 /** 默认实现，直接使用 Node fs。 */
@@ -71,9 +111,45 @@ export const nodeLogFileSystem: LogFileSystem = {
     await mkdir(path, options);
   },
   appendFile: (path, data) => appendFile(path, data),
+  openAppendStream: (path) => openNodeAppendStream(path),
   readdir: (path) => readdir(path),
   unlink: (path) => unlink(path),
 };
+
+/** 把 Node 追加写流适配成 `LogStream`：错误有监听、finish 可等待、重复 end 安全。 */
+function openNodeAppendStream(path: string): LogStream {
+  const stream = createWriteStream(path, { flags: 'a' });
+  let failed = false;
+  let errorListener: ((error: unknown) => void) | undefined;
+  let ended: Promise<void> | undefined;
+
+  // 没有监听者的 error 事件会升级为未捕获异常，必须先挂上。
+  stream.on('error', (error: unknown) => {
+    failed = true;
+    errorListener?.(error);
+  });
+
+  return {
+    write(chunk: string) {
+      // 失败或已结束之后的写入静默丢弃：背压由 Node 内部缓冲，日志量级可忽略。
+      if (failed || ended !== undefined) return;
+      stream.write(chunk);
+    },
+    end(): Promise<void> {
+      ended ??= failed
+        ? Promise.resolve()
+        : new Promise<void>((resolve, reject) => {
+            stream.on('finish', resolve);
+            stream.on('error', reject);
+            stream.end();
+          });
+      return ended;
+    },
+    onError(listener: (error: unknown) => void) {
+      errorListener = listener;
+    },
+  };
+}
 
 export interface ResolveLogDirectoryOptions {
   platform: NodePlatform;
@@ -304,15 +380,17 @@ export interface LoggerOptions {
   now?: () => Date;
   /** 打开时是否清理过期日志；默认 true。 */
   pruneOnOpen?: boolean;
-  /** 初始化或单次写入失败时的出口；用于在控制台等处留下最后线索。 */
+  /** 初始化、打开写入口、单批写入或流出错时的出口；用于在控制台等处留下最后线索。 */
   onError?: (error: unknown, event: string) => void;
 }
 
 /**
  * 创建文件日志器。
  *
- * 初始化（建目录 + 清理过期日志）在后台进行，写入经队列等初始化完成后按顺序追加；
- * 初始化失败（如目录不可创建）时降级为静默丢弃——记录日志失败绝不能影响主流程。
+ * 初始化（建目录 + 清理过期日志）在后台进行；写入先进入内存缓冲，按 200 ms 或累计
+ * 50 条批量刷新到长驻追加流，跨自然日轮换写入口。注入面未提供 `openAppendStream`
+ * 时回退为按批 `appendFile`（即写即走）。初始化失败（如目录不可创建）、打开写入口
+ * 失败、单批写入失败或流出错时降级为静默丢弃——记录日志失败绝不能影响主流程。
  */
 export function createLogger(options: LoggerOptions): Logger {
   const fs = options.fs ?? nodeLogFileSystem;
@@ -324,12 +402,17 @@ export function createLogger(options: LoggerOptions): Logger {
   const pathApi = options.platform === 'win32' ? win32 : posix;
   const minOrder = LEVEL_ORDER[options.level ?? DEFAULT_LOG_LEVEL] ?? LEVEL_ORDER[DEFAULT_LOG_LEVEL];
   const pruneOnOpen = options.pruneOnOpen ?? true;
+  const openStream = fs.openAppendStream?.bind(fs);
 
   let closed = false;
   let unavailable = false;
   let closePromise: Promise<void> | undefined;
-  const pending = new Set<Promise<void>>();
-  let chain: Promise<unknown> = Promise.resolve();
+  let buffer: LogEntry[] = [];
+  let bufferPath: string | undefined;
+  let sink: LogSink | undefined;
+  let sinkPath: string | undefined;
+  let flushChain: Promise<void> = Promise.resolve();
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
   const init = (async () => {
     try {
@@ -342,6 +425,89 @@ export function createLogger(options: LoggerOptions): Logger {
       options.onError?.(error, 'logger-init');
     }
   })();
+
+  function stopTimer(): void {
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    timer = undefined;
+  }
+
+  /** 记录日志失败不能影响主流程：丢弃缓冲与挂起写入，只经 onError 留线索。 */
+  function degrade(error: unknown, event: string): void {
+    if (unavailable) return;
+    unavailable = true;
+    buffer = [];
+    bufferPath = undefined;
+    stopTimer();
+    options.onError?.(error, event);
+  }
+
+  function scheduleFlush(): void {
+    if (timer !== undefined || closed || unavailable) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      void flush();
+    }, LOG_FLUSH_INTERVAL_MS);
+    // 刷新定时器不得阻止进程退出；正常退出的落盘保证由 close() 提供。
+    (timer as { unref?: () => void }).unref?.();
+  }
+
+  async function openSink(path: string): Promise<LogSink | undefined> {
+    if (openStream === undefined) {
+      // 回写路径：注入面未提供追加流，按批 appendFile，即写即走。
+      return { write: (chunk) => fs.appendFile(path, chunk), end: async () => undefined };
+    }
+    try {
+      const stream = openStream(path);
+      stream.onError((error) => degrade(error, 'logger-stream'));
+      return stream;
+    } catch (error) {
+      degrade(error, 'logger-stream');
+      return undefined;
+    }
+  }
+
+  async function endSink(): Promise<void> {
+    const current = sink;
+    sink = undefined;
+    sinkPath = undefined;
+    if (current === undefined) return;
+    try {
+      await current.end();
+    } catch (error) {
+      degrade(error, 'logger-stream');
+    }
+  }
+
+  async function writeEntries(entries: LogEntry[], target: string): Promise<void> {
+    if (unavailable) return;
+    try {
+      if (sink === undefined || sinkPath !== target) {
+        // 首写或跨自然日：先结束旧写入口，再打开目标日期的入口。
+        await endSink();
+        const opened = await openSink(target);
+        if (opened === undefined) return;
+        sink = opened;
+        sinkPath = target;
+      }
+      await sink.write(entries.map((entry) => entry.line).join(''));
+    } catch (error) {
+      // 整批失败：丢弃本批并降级，不抛给调用方。
+      degrade(error, entries[0].event);
+    }
+  }
+
+  /** 同步摘下当前缓冲，再把写入链入串行队列；顺序由队列保证。 */
+  function flush(): Promise<void> {
+    const entries = buffer;
+    const target = bufferPath;
+    buffer = [];
+    bufferPath = undefined;
+    if (entries.length === 0 || target === undefined || unavailable) return flushChain;
+
+    flushChain = flushChain.then(() => writeEntries(entries, target));
+    return flushChain;
+  }
 
   function enqueue(event: string, level: LogLevel, data: unknown): void {
     if (closed || unavailable) return;
@@ -364,29 +530,22 @@ export function createLogger(options: LoggerOptions): Logger {
     })}\n`;
     const path = pathApi.join(directory, logFileNameFor(timestamp, prefix));
 
-    // 队列保证同一日志文件内的记录顺序；前一条失败不阻断后一条。
-    // 已入队的写入即使随后 close 也必须刷新，故这里只判断「不可用」。
-    const write = chain
-      .then(() => init)
-      .then(() => {
-        if (unavailable) return;
-        return fs.appendFile(path, line);
-      });
-    chain = write.then(
-      () => undefined,
-      () => undefined,
-    );
+    // 跨自然日：先把上一天的缓冲整体刷出，保证一批缓冲不跨天混装。
+    if (bufferPath !== undefined && bufferPath !== path) void flush();
 
-    const tracked = write.then(
-      () => undefined,
-      (error: unknown) => {
-        options.onError?.(error, event);
-      },
-    );
-    pending.add(tracked);
-    void tracked.finally(() => {
-      pending.delete(tracked);
-    });
+    buffer.push({ event, line });
+    bufferPath = path;
+
+    // 回写路径即写即走；流式路径按批量阈值或定时器刷新。
+    if (openStream === undefined) {
+      void flush();
+      return;
+    }
+    if (buffer.length >= LOG_FLUSH_MAX_LINES) {
+      void flush();
+      return;
+    }
+    scheduleFlush();
   }
 
   return {
@@ -396,9 +555,15 @@ export function createLogger(options: LoggerOptions): Logger {
     debug: (event, data) => enqueue(event, 'debug', data),
     close(): Promise<void> {
       closed = true;
+      stopTimer();
       closePromise ??= (async () => {
-        await init.catch(() => undefined);
-        await Promise.allSettled([...pending]);
+        try {
+          await init;
+          await flush();
+          await endSink();
+        } catch {
+          // close 永不 reject：退出流程不应被日志写入失败拖倒。
+        }
       })();
       return closePromise;
     },

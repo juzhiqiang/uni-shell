@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_RETENTION_DAYS,
   LOG_FILE_PREFIX,
+  LOG_FLUSH_INTERVAL_MS,
+  LOG_FLUSH_MAX_LINES,
   createLogger,
   isSensitiveKey,
   logFileNameFor,
@@ -12,6 +14,7 @@ import {
   resolveLogDirectory,
   type LogFileSystem,
   type LoggerOptions,
+  type LogStream,
 } from '../../../src/main/logging/logger';
 
 /**
@@ -19,11 +22,76 @@ import {
  * 平台目录解析、保留期清理、结构化事件、敏感字段脱敏与关闭时刷新。
  */
 
-/** 内存文件系统；目录只记录不校验，读写都落在 Map 上。 */
-function createMemoryFs(initial: Record<string, string> = {}) {
+const LOG_DIR = '/var/log/uni-shell';
+const DAY_LOG_PATH = `${LOG_DIR}/${LOG_FILE_PREFIX}-2026-10-28.log`;
+const NEXT_DAY_LOG_PATH = `${LOG_DIR}/${LOG_FILE_PREFIX}-2026-10-29.log`;
+
+/**
+ * 内存文件系统；目录只记录不校验，读写都落在 Map 上。
+ *
+ * `appendStream: false` 时不提供 `openAppendStream`，用于验证回写兼容路径：
+ * 注入面未实现追加流时即写即走、不做定时批量（与 recovery-flow 集成测试的注入面一致）。
+ */
+function createMemoryFs(initial: Record<string, string> = {}, options: { appendStream?: boolean } = {}) {
   const files = new Map<string, string>(Object.entries(initial));
   const directories = new Set<string>();
   const failures: Array<{ path: string; error: unknown }> = [];
+  const openedStreams: string[] = [];
+  const endedStreams: string[] = [];
+  const streamStates = new Map<
+    string,
+    { writes: number; chunks: string[]; ended: boolean; releaseFinish?: () => void }
+  >();
+  const streamHooks = new Map<string, { failNextWrite?: boolean; gateFinish?: boolean }>();
+
+  /** 打开内存追加流：write 同步落 Map 并计数，end 等待（可被测试挂起的）finish。 */
+  function openMemoryStream(path: string): LogStream {
+    const hook = streamHooks.get(path) ?? {};
+    const state = {
+      writes: 0,
+      chunks: [] as string[],
+      ended: false,
+      finishGate: undefined as Promise<void> | undefined,
+      releaseFinish: undefined as (() => void) | undefined,
+    };
+    if (hook.gateFinish) {
+      state.finishGate = new Promise<void>((resolve) => {
+        state.releaseFinish = resolve;
+      });
+    }
+    streamHooks.delete(path);
+    streamStates.set(path, state);
+    openedStreams.push(path);
+
+    let failNextWrite = hook.failNextWrite === true;
+    let errorListener: ((error: unknown) => void) | undefined;
+    return {
+      write(chunk: string) {
+        state.writes += 1;
+        state.chunks.push(chunk);
+        if (failNextWrite) {
+          failNextWrite = false;
+          // Node 的流出错是异步发出的；用原生 Promise 微任务模拟，
+          // 不依赖可能被假定时器伪造的计时器 API。
+          void Promise.resolve().then(() => {
+            errorListener?.(
+              Object.assign(new Error(`ENOSPC: ${path}`), { code: 'ENOSPC' } as NodeJS.ErrnoException),
+            );
+          });
+          return;
+        }
+        files.set(path, `${files.get(path) ?? ''}${chunk}`);
+      },
+      async end() {
+        state.ended = true;
+        endedStreams.push(path);
+        await (state.finishGate ?? Promise.resolve());
+      },
+      onError(listener: (error: unknown) => void) {
+        errorListener = listener;
+      },
+    };
+  }
 
   const fs: LogFileSystem = {
     async mkdir(path) {
@@ -50,10 +118,25 @@ function createMemoryFs(initial: Record<string, string> = {}) {
     },
   };
 
+  if (options.appendStream !== false) {
+    fs.openAppendStream = openMemoryStream;
+  }
+
   return {
     fs,
     files,
     directories,
+    openedStreams,
+    endedStreams,
+    streamStates,
+    /** 让指定路径的流在下一次 write 时异步报错。 */
+    failNextWriteFor(path: string) {
+      streamHooks.set(path, { ...streamHooks.get(path), failNextWrite: true });
+    },
+    /** 让指定路径的流 end() 挂起，直到测试调用 releaseFinish。 */
+    gateFinishFor(path: string) {
+      streamHooks.set(path, { ...streamHooks.get(path), gateFinish: true });
+    },
     /** 让指定路径（前缀匹配）的 mkdir 失败，模拟日志目录不可创建。 */
     failMkdir(path: string) {
       const original = fs.mkdir.bind(fs);
@@ -529,9 +612,9 @@ describe('关闭与刷新', () => {
     expect(lines).toHaveLength(1);
   });
 
-  it('单次写入失败不影响后续写入，并经 onError 上报', async () => {
+  it('批量写入失败后经 onError 上报并降级为不再写入', async () => {
     const memory = createMemoryFs();
-    memory.failAppendOnce(`/var/log/uni-shell/${LOG_FILE_PREFIX}-2026-10-28.log`);
+    memory.failNextWriteFor(DAY_LOG_PATH);
     const errors: Array<{ event: string; code: unknown }> = [];
     const logger = createLogger(
       loggerOptions({
@@ -546,9 +629,9 @@ describe('关闭与刷新', () => {
     logger.info('second');
     await logger.close();
 
-    const lines = readLines(memory, `/var/log/uni-shell/${LOG_FILE_PREFIX}-2026-10-28.log`);
-    expect(lines.map((line) => line.event)).toEqual(['second']);
-    expect(errors).toEqual([{ event: 'first', code: 'ENOSPC' }]);
+    // 批处理后单条失败无法定位续写：整批丢弃并降级为不可用，不影响主流程。
+    expect(errors).toEqual([{ event: 'logger-stream', code: 'ENOSPC' }]);
+    expect(memory.files.get(DAY_LOG_PATH)).toBeUndefined();
   });
 
   it('日志目录不可创建时降级为静默丢弃，不影响调用方', async () => {
@@ -569,5 +652,210 @@ describe('关闭与刷新', () => {
 
     expect(errors).toHaveLength(1);
     expect(memory.files.size).toBe(0);
+  });
+});
+
+describe('批量刷新与写入流（Task 23）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** 只排空微任务，不推进定时器；假定时器不影响 Promise 微队列。 */
+  async function settle(turns = 20): Promise<void> {
+    for (let turn = 0; turn < turns; turn += 1) {
+      await Promise.resolve();
+    }
+  }
+
+  it('累计 50 条时立即批量刷新，只产生一次 write', async () => {
+    const memory = createMemoryFs();
+    const logger = createLogger(loggerOptions({ fs: memory.fs }));
+
+    for (let index = 0; index < LOG_FLUSH_MAX_LINES; index += 1) {
+      logger.info('bulk', { index });
+    }
+    // 阈值刷新是「同步摘缓冲 + 微任务链式写入」，此刻还没执行到 write。
+    expect(memory.streamStates.get(DAY_LOG_PATH)?.writes ?? 0).toBe(0);
+
+    await logger.close();
+
+    expect(memory.streamStates.get(DAY_LOG_PATH)?.writes).toBe(1);
+    expect(readLines(memory, DAY_LOG_PATH)).toHaveLength(LOG_FLUSH_MAX_LINES);
+  });
+
+  it('不足 50 条时每 200 ms 定时刷新一次', async () => {
+    const memory = createMemoryFs();
+    const logger = createLogger(loggerOptions({ fs: memory.fs }));
+
+    logger.info('tick');
+    await vi.advanceTimersByTimeAsync(LOG_FLUSH_INTERVAL_MS - 1);
+    expect(memory.files.get(DAY_LOG_PATH)).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(readLines(memory, DAY_LOG_PATH)).toHaveLength(1);
+  });
+
+  it('跨自然日轮换写入口：先结束旧流再打开新流', async () => {
+    const memory = createMemoryFs();
+    let current = localDate(2026, 10, 28, 23);
+    const logger = createLogger(loggerOptions({ fs: memory.fs, now: () => current }));
+
+    logger.info('before-midnight');
+    current = localDate(2026, 10, 29, 1);
+    logger.info('after-midnight');
+    await logger.close();
+
+    expect(memory.openedStreams).toEqual([DAY_LOG_PATH, NEXT_DAY_LOG_PATH]);
+    expect(memory.endedStreams).toEqual([DAY_LOG_PATH, NEXT_DAY_LOG_PATH]);
+    expect(readLines(memory, DAY_LOG_PATH).map((line) => line.event)).toEqual(['before-midnight']);
+    expect(readLines(memory, NEXT_DAY_LOG_PATH).map((line) => line.event)).toEqual(['after-midnight']);
+  });
+
+  it('close 会等流 finish 落盘后才 resolve', async () => {
+    const memory = createMemoryFs();
+    const logger = createLogger(loggerOptions({ fs: memory.fs }));
+
+    logger.info('gated');
+    memory.gateFinishFor(DAY_LOG_PATH);
+
+    let settled = false;
+    const closing = logger.close().then(() => {
+      settled = true;
+    });
+
+    await settle();
+    // finish 被挂起：内容已 write，但 close 仍未 resolve。
+    expect(memory.streamStates.get(DAY_LOG_PATH)?.writes).toBe(1);
+    expect(settled).toBe(false);
+
+    memory.streamStates.get(DAY_LOG_PATH)?.releaseFinish?.();
+    await closing;
+
+    expect(settled).toBe(true);
+    expect(readLines(memory, DAY_LOG_PATH)).toHaveLength(1);
+  });
+
+  it('降级后不再写入，close 仍正常 resolve', async () => {
+    const memory = createMemoryFs();
+    const errors: unknown[] = [];
+    const logger = createLogger(
+      loggerOptions({
+        fs: memory.fs,
+        onError: (error) => {
+          errors.push(error);
+        },
+      }),
+    );
+
+    memory.failNextWriteFor(DAY_LOG_PATH);
+    logger.info('boom');
+    await vi.advanceTimersByTimeAsync(LOG_FLUSH_INTERVAL_MS);
+    await settle();
+
+    logger.info('after-boom');
+    await vi.advanceTimersByTimeAsync(LOG_FLUSH_INTERVAL_MS * 5);
+    await settle();
+
+    await expect(logger.close()).resolves.toBeUndefined();
+    expect(errors).toHaveLength(1);
+    expect(memory.files.get(DAY_LOG_PATH)).toBeUndefined();
+  });
+
+  it('跨天与批量阈值混合时顺序不乱、按天拆分', async () => {
+    const memory = createMemoryFs();
+    let current = localDate(2026, 10, 28, 23, 59);
+    const logger = createLogger(loggerOptions({ fs: memory.fs, now: () => current }));
+
+    for (let index = 0; index < 30; index += 1) {
+      logger.info(`day28-${index}`);
+    }
+    current = localDate(2026, 10, 29, 0, 1);
+    for (let index = 0; index < 60; index += 1) {
+      logger.info(`day29-${index}`);
+    }
+    await logger.close();
+
+    expect(readLines(memory, DAY_LOG_PATH).map((line) => line.event)).toEqual(
+      Array.from({ length: 30 }, (_, index) => `day28-${index}`),
+    );
+    expect(readLines(memory, NEXT_DAY_LOG_PATH).map((line) => line.event)).toEqual(
+      Array.from({ length: 60 }, (_, index) => `day29-${index}`),
+    );
+    // 跨天把 30 条单独刷一次；次日 60 条按 50 阈值刷一次、close 再刷剩余 10 条。
+    expect(memory.streamStates.get(DAY_LOG_PATH)?.writes).toBe(1);
+    expect(memory.streamStates.get(NEXT_DAY_LOG_PATH)?.writes).toBe(2);
+  });
+});
+
+describe('刷新定时器（Task 23）', () => {
+  it('刷新定时器调用 unref，避免阻止进程退出', async () => {
+    const unref = vi.fn();
+    const intervals: number[] = [];
+    vi.stubGlobal(
+      'setTimeout',
+      ((_handler: () => void, ms?: number) => {
+        intervals.push(ms ?? -1);
+        return { unref, ref: vi.fn() } as unknown as NodeJS.Timeout;
+      }) as typeof setTimeout,
+    );
+
+    try {
+      const memory = createMemoryFs();
+      const logger = createLogger(loggerOptions({ fs: memory.fs }));
+
+      logger.info('event');
+      expect(intervals).toEqual([LOG_FLUSH_INTERVAL_MS]);
+      expect(unref).toHaveBeenCalledTimes(1);
+
+      await logger.close();
+      expect(readLines(memory, DAY_LOG_PATH)).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('回写兼容路径（Task 23：注入面未提供追加流）', () => {
+  it('没有 openAppendStream 时即写即走，不依赖定时器', async () => {
+    const memory = createMemoryFs({}, { appendStream: false });
+    const logger = createLogger(loggerOptions({ fs: memory.fs }));
+
+    logger.info('fallback');
+    // 只排空微任务（与 recovery-flow 集成测试的 settleLog 同法），不推进任何定时器。
+    for (let turn = 0; turn < 50; turn += 1) {
+      await Promise.resolve();
+    }
+
+    expect(readLines(memory, DAY_LOG_PATH).map((line) => line.event)).toEqual(['fallback']);
+    expect(memory.openedStreams).toEqual([]);
+    await logger.close();
+  });
+
+  it('回写批量失败后经 onError 上报并降级', async () => {
+    const memory = createMemoryFs({}, { appendStream: false });
+    memory.failAppendOnce(DAY_LOG_PATH);
+    const errors: Array<{ event: string; code: unknown }> = [];
+    const logger = createLogger(
+      loggerOptions({
+        fs: memory.fs,
+        onError: (error, event) => {
+          errors.push({ event, code: (error as NodeJS.ErrnoException).code });
+        },
+      }),
+    );
+
+    logger.info('first');
+    logger.info('second');
+    for (let turn = 0; turn < 50; turn += 1) {
+      await Promise.resolve();
+    }
+
+    expect(errors).toEqual([{ event: 'first', code: 'ENOSPC' }]);
+    expect(memory.files.get(DAY_LOG_PATH)).toBeUndefined();
+    await logger.close();
   });
 });
