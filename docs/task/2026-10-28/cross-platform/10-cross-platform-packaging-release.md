@@ -13,6 +13,7 @@ spec: ../../../electron-desktop-shell-product-spec-v2.1-cross-platform.md
 用户于 2026-10-28 明确授权任务 10 在任务 9 完成前提前启动。任务 9 已于提交 `477c4e8` 完成；任务 10 当前依赖已满足，本任务按既有接口实现打包。
 
 **Files:**
+- Create: `.github/workflows/package.yml`
 - Create: `electron-builder/windows.yml`
 - Create: `electron-builder/mac.yml`
 - Create: `electron-builder/linux.yml`
@@ -35,11 +36,11 @@ spec: ../../../electron-desktop-shell-product-spec-v2.1-cross-platform.md
 
   Use current-user assisted NSIS with custom directory and ZIP output; never default to `C:\Program Files`.
 
-- [ ] **Step 3: Implement macOS packaging**
+- [x] **Step 3: Implement macOS packaging**
 
   Build Universal DMG and ZIP; require Developer ID signing and notarization inputs from CI secrets.
 
-- [ ] **Step 4: Implement Linux packaging**
+- [x] **Step 4: Implement Linux packaging**
 
   Build DEB and AppImage; ensure AppImage can read a sibling `config.json`.
 
@@ -49,7 +50,7 @@ spec: ../../../electron-desktop-shell-product-spec-v2.1-cross-platform.md
 
 - [ ] **Step 6: Run package verification**
 
-  Run each available platform build followed by `npm run verify:release`; unavailable platform builds must be recorded as CI blockers, not marked passed.
+  GitHub Actions runs each build on a native runner, verifies each platform artifact, then verifies the complete release set on macOS and uploads `release-all-platforms`. Do not mark this step complete until that workflow passes with signing secrets configured.
 
 - [x] **Step 7: Commit task 10 implementation and current validation record**
 
@@ -66,6 +67,13 @@ spec: ../../../electron-desktop-shell-product-spec-v2.1-cross-platform.md
 - `npm run build:win`：首次使用默认输出目录失败，Windows 返回 `EPERM/EBUSY`，无法替换既有 `win-unpacked` 暂存目录；在新的隔离输出目录重跑通过。
 - `npm run build:mac`：构建入口在签名阶段前按预期阻止；当前宿主不是 macOS，且未提供 Developer ID 与 notarization 凭据。
 - `npm run build:linux`：显式 Linux 构建遇到 Windows 不支持 AppImage 符号链接的 `EPERM`。单独 DEB 构建因 Windows 主机缺少 `fpm` 报 `ENOENT`；正式构建需 Linux runner。Linux DEB 维护者信息由 CI 环境变量 `UNI_SHELL_LINUX_MAINTAINER` 注入。
-- `npm run verify:release`：typecheck 与 lint 通过；全量测试为 432 通过、2 失败（`tests/integration/window-manager.test.ts` 两项 POSIX `/app/...` 路径断言在 Windows 上得到反斜杠路径）。
-- 复核（2026-10-29，Windows）：`npm test -- --run tests/unit/release/verify-release.test.ts` 6 项通过；`npm run typecheck`、`npm run lint` 通过；`npm test` 仍为 432 项通过、2 项因上述 Windows 路径断言失败。
-- 任务状态保持 `in_progress`：macOS 和 Linux 产物、macOS 签名/公证及三平台汇总清单尚未在对应 runner 验证；上述阻塞不标记为通过。
+- `npm run verify:release`：此前 typecheck 与 lint 通过；当时全量测试 432 通过、2 失败（`tests/integration/window-manager.test.ts` 两项 POSIX `/app/...` 路径断言在 Windows 上得到反斜杠路径）。
+- Windows 全量测试路径断言修正：先复现 `createConfigWindowLoader` 两条断言在 Windows 返回反斜杠路径，再将断言改为平台原生 `path.join`；目标测试 2/2 通过，全量测试 434/434 通过。
+- 新增 `.github/workflows/package.yml`：手动触发，在 Windows/macOS/Linux 原生 runner 并行打包和逐平台验证；macOS 汇总 runner 下载各平台输出，运行 `npm run verify:release` 并上传含完整 manifest 的 `release-all-platforms`。完整 workflow 尚未在 GitHub 运行。
+- 发布验证新增产物文件名版本匹配检查：先补测试并观察旧实现错误接受 1.0.0 产物作为 2.0.0 发布，再实现校验；发布验证器 7 项通过。
+- `npm run build:win -- --config.directories.output=release/task10-windows-validation/windows`：通过；实际生成 NSIS 和 ZIP，未配置 Windows 签名证书。
+- `node scripts/verify-release.ts --platform=windows --release-dir=release/task10-windows-validation`：通过；2 项产物及资源内配置模板验证通过。EXE SHA-256 `5ee9c964cef07ece1b3391ccd98d7d3487642af9b4cf669935e25b1f5560416e`；ZIP SHA-256 `96fb656603ac8d9644e69ed096d7291f600675c4a491a689b3e8d407cad3b8f5`。
+- 复核（2026-10-29）：`npm run typecheck`、`npm run lint` 通过；`npm test` 20 个文件、435 项全部通过；workflow YAML 解析通过，包含 checks、windows、macos、linux、aggregate 五个 job。
+- GitHub Actions 所需配置：Secrets `CSC_LINK`、`CSC_KEY_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID`、`UNI_SHELL_LINUX_MAINTAINER`；未配置时 workflow 应失败而非产生未签名正式包。
+- Apple 签名 Secrets 仅暴露给 macOS 签名构建步骤，不传给 `npm ci` 或后续验证步骤。
+- `Step 6` 仍待 GitHub Actions 执行：本地不具备 macOS 构建宿主；配置所列 secrets 后，需成功运行 `Cross-platform packages` 并检查完整产物，之后才能完成任务状态。

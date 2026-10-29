@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createDefaultConfig } from '../../src/main/config/config-schema';
@@ -840,7 +841,7 @@ describe('纯辅助函数', () => {
 
     await loader(window);
 
-    expect(window.loadFileCalls).toEqual(['/app/dist/renderer/config/index.html']);
+    expect(window.loadFileCalls).toEqual([join('/app', 'dist/renderer/config/index.html')]);
     expect(window.loadURLCalls).toEqual([]);
   });
 
@@ -851,6 +852,6 @@ describe('纯辅助函数', () => {
     await loader(window);
 
     expect(window.loadURLCalls).toEqual([]);
-    expect(window.loadFileCalls).toEqual(['/app/dist/renderer/config/index.html']);
+    expect(window.loadFileCalls).toEqual([join('/app', 'dist/renderer/config/index.html')]);
   });
 });

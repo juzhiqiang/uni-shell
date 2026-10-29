@@ -1,0 +1,139 @@
+name: Cross-platform packages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restrict release packaging to main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Release packaging must be dispatched from main."
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+
+  windows:
+    needs: checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:win
+      - run: node scripts/verify-release.ts --platform=windows --release-dir=release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: release/windows/
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    needs: checks
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build signed macOS packages
+        run: npm run build:mac
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - run: node scripts/verify-release.ts --platform=mac --release-dir=release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: release/mac/
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    needs: checks
+    runs-on: ubuntu-22.04
+    env:
+      UNI_SHELL_LINUX_MAINTAINER: ${{ secrets.UNI_SHELL_LINUX_MAINTAINER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install DEB and AppImage build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ruby ruby-dev libfuse2
+          sudo gem install --no-document fpm
+      - run: npm ci
+      - run: npm run build:linux
+      - run: node scripts/verify-release.ts --platform=linux --release-dir=release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: release/linux/
+          if-no-files-found: error
+          retention-days: 14
+
+  aggregate:
+    needs: [windows, macos, linux]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+          path: release/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-macos
+          path: release/mac
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-linux
+          path: release/linux
+      - name: Verify complete release set
+        run: npm run verify:release
+      - name: Assemble downloadable bundle
+        run: |
+          mkdir -p release-bundle/windows release-bundle/mac release-bundle/linux
+          cp release/windows/*.exe release-bundle/windows/
+          cp release/windows/*.zip release-bundle/windows/
+          cp release/mac/*.dmg release-bundle/mac/
+          cp release/mac/*.zip release-bundle/mac/
+          cp release/linux/*.deb release-bundle/linux/
+          cp release/linux/*.AppImage release-bundle/linux/
+          cp release/release-manifest.json release-bundle/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-all-platforms
+          path: release-bundle/
+          if-no-files-found: error
+          retention-days: 30

@@ -2,6 +2,13 @@
 
 所有正式产物都必须从受信任的 CI runner 构建。签名材料只通过受保护的 CI secrets 注入，不提交到仓库。
 
+## GitHub Actions
+
+- 在仓库 Actions 页面手动运行 `Cross-platform packages` workflow；仅使用 `main` 分支的工作流定义。
+- 配置 `CSC_LINK`、`CSC_KEY_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID` 和 `UNI_SHELL_LINUX_MAINTAINER` secrets。
+- 等待 Windows、macOS、Linux 构建及 macOS 汇总 job 全部成功；下载 `release-all-platforms`，确认其中有三平台分目录产物和根目录 `release-manifest.json`。
+- workflow 失败、签名/公证失败或任何平台产物缺失时，不将任务或发布标为完成。
+
 ## Windows
 
 - 在 Windows x64 runner 上运行 `npm run build:win`，确认输出一个 NSIS `.exe` 和一个 `.zip`。

@@ -142,6 +142,17 @@ export async function verifyRelease(options: VerifyReleaseOptions): Promise<Veri
   for (const platform of platforms) {
     const platformDirectory = join(releaseDir, platform);
     const names = await artifactsFor(platformDirectory, platform);
+    const expectedPrefix = 'UniShell-' + options.version + '-';
+    const mismatchedVersions = names.filter((name) => !name.startsWith(expectedPrefix));
+    if (mismatchedVersions.length > 0) {
+      throw new Error(
+        TARGETS[platform].label +
+          ' artifact filenames must include release version ' +
+          options.version +
+          ': ' +
+          mismatchedVersions.join(', '),
+      );
+    }
     if (!(await hasPackagedConfigTemplate(platformDirectory))) {
       throw new Error(TARGETS[platform].label + ' is missing packaged config.example.json under app resources');
     }

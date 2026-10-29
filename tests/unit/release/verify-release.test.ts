@@ -78,6 +78,19 @@ describe('verifyRelease', () => {
     ).rejects.toThrow(/AppImage/);
   });
 
+  it('rejects artifacts whose filename version differs from the release version', async () => {
+    const releaseDir = await createReleaseFixture();
+
+    await expect(
+      verifyRelease({
+        releaseDir,
+        templatePath: join(releaseDir, 'config.example.json'),
+        platforms: ['windows'],
+        version: '2.0.0',
+      }),
+    ).rejects.toThrow(/version 2\.0\.0/);
+  });
+
   it('rejects artifacts when the config template was not embedded in the unpacked application', async () => {
     const releaseDir = await createReleaseFixture();
     await rm(join(releaseDir, 'windows', 'unpacked', 'resources', 'config.example.json'));
