@@ -55,6 +55,7 @@ interface FormDraft {
   allowExternalLinks: boolean;
   allowPopups: boolean;
   allowDownloads: boolean;
+  icon: string;
   level: LogLevel;
   retentionDays: string;
 }
@@ -102,6 +103,7 @@ function toDraft(config: AppConfig): FormDraft {
     allowExternalLinks: config.security.allowExternalLinks,
     allowPopups: config.security.allowPopups,
     allowDownloads: config.security.allowDownloads,
+    icon: config.appearance?.icon ?? '',
     level: config.logging.level,
     retentionDays: String(config.logging.retentionDays),
   };
@@ -162,13 +164,13 @@ function buildCandidate(draft: FormDraft): Record<string, unknown> {
       trayConfigEnabled: draft.trayConfigEnabled,
     },
     security: {
-      allowedOrigins: draft.allowedOrigins
-        .split(/[\n,;]/)
-        .map((origin) => origin.trim())
-        .filter((origin) => origin.length > 0),
+      allowedOrigins: toHostList(draft.allowedOrigins),
       allowExternalLinks: draft.allowExternalLinks,
       allowPopups: draft.allowPopups,
       allowDownloads: draft.allowDownloads,
+    },
+    appearance: {
+      icon: draft.icon.trim(),
     },
     logging: {
       level: draft.level,
@@ -382,6 +384,8 @@ export function ConfigurationApp() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [configPath, setConfigPath] = useState(readInitialConfigPath);
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
+  const [iconPreview, setIconPreview] = useState<string | null>(null);
+  const [iconMessage, setIconMessage] = useState<string | null>(null);
 
   // 挂载即经白名单桥读取配置；preload 缺失或读取失败都给出可操作提示。
   useEffect(() => {
@@ -510,6 +514,32 @@ export function ConfigurationApp() {
       setConnectionMessage(`连接失败：${describeError(error)}`);
     }
   }, [bridge, draft]);
+
+  // 规格 §5.4：经白名单桥打开文件选择对话框；主进程负责复制到配置目录并返回预览。
+  const handlePickIcon = useCallback(async () => {
+    if (bridge === undefined) return;
+    setIconMessage(null);
+    try {
+      const result = await bridge.pickIcon();
+      // 用户取消选择属正常操作，不展示错误。
+      if (result.canceled) return;
+      if (result.ok && result.fileName !== undefined && result.fileName !== '') {
+        update('icon', result.fileName);
+        setIconPreview(result.previewDataUrl ?? null);
+        setIconMessage(`已选择 ${result.fileName}；保存并重启后生效。`);
+        return;
+      }
+      setIconMessage(`图标选择失败：${result.message ?? '未知错误'}`);
+    } catch (error) {
+      setIconMessage(`图标选择失败：${describeError(error)}`);
+    }
+  }, [bridge, update]);
+
+  const handleResetIcon = useCallback(() => {
+    update('icon', '');
+    setIconPreview(null);
+    setIconMessage('已恢复内置默认图标；保存并重启后生效。');
+  }, [update]);
 
   if (phase === 'loading') {
     return (
@@ -786,6 +816,37 @@ export function ConfigurationApp() {
             checked={draft.allowDownloads}
             onChange={(checked) => update('allowDownloads', checked)}
           />
+        </fieldset>
+
+        <fieldset disabled={saving}>
+          <legend>外观</legend>
+          <p className="field field-icon-current">
+            <span className="field-caption">当前图标</span>
+            <span className="icon-current" data-testid="current-icon">
+              {draft.icon === '' ? '内置默认图标' : draft.icon}
+            </span>
+          </p>
+          {iconPreview !== null && (
+            <p className="field field-inline">
+              <img className="icon-preview" src={iconPreview} alt="所选图标预览" width={64} height={64} />
+            </p>
+          )}
+          <p className="field field-inline">
+            <button type="button" onClick={() => void handlePickIcon()} disabled={saving}>
+              选择图标…
+            </button>
+            <button type="button" onClick={handleResetIcon} disabled={saving || draft.icon === ''}>
+              恢复默认
+            </button>
+          </p>
+          {iconMessage !== null && (
+            <p role="status" className="banner banner-dirty">
+              {iconMessage}
+            </p>
+          )}
+          <p className="field-hint">
+            支持 PNG / ICO / ICNS；所选文件会复制到配置目录，保存并重启客户端后，窗口、任务栏与托盘使用新图标。
+          </p>
         </fieldset>
 
         <fieldset disabled={saving}>

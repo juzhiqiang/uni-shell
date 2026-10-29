@@ -81,6 +81,7 @@ interface BridgeMock extends ConfigBridge {
   saveConfig: ReturnType<typeof vi.fn>;
   resetConfig: ReturnType<typeof vi.fn>;
   testConnection: ReturnType<typeof vi.fn>;
+  pickIcon: ReturnType<typeof vi.fn>;
 }
 
 function installBridge(overrides: Partial<ConfigBridge> = {}): BridgeMock {
@@ -94,6 +95,7 @@ function installBridge(overrides: Partial<ConfigBridge> = {}): BridgeMock {
     })),
     resetConfig: vi.fn(async () => createConfig({ targetUrl: '' })),
     testConnection: vi.fn(async () => ({ ok: true, statusCode: 200, durationMs: 42 })),
+    pickIcon: vi.fn(async () => ({ ok: true, fileName: 'app-icon.png', previewDataUrl: 'data:image/png;base64,AA' })),
     ...overrides,
   } as BridgeMock;
   (window as unknown as { uniShell: ConfigBridge }).uniShell = bridge;
@@ -531,12 +533,78 @@ describe('连通性测试', () => {
 });
 
 describe('字段分组', () => {
-  it('按目标网址、窗口、网络、启动、维护、安全和日志分组展示', async () => {
+  it('按目标网址、窗口、网络、启动、维护、安全、外观和日志分组展示', async () => {
     installBridge();
 
     await renderApp();
 
     const legends = Array.from(document.querySelectorAll('legend')).map((element) => element.textContent);
-    expect(legends).toEqual(['目标网址', '窗口', '网络', '启动', '维护', '安全', '日志']);
+    expect(legends).toEqual(['目标网址', '窗口', '网络', '启动', '维护', '安全', '外观', '日志']);
+  });
+});
+
+describe('自定义应用图标（规格 §5.4）', () => {
+  it('未配置图标时展示内置默认图标', async () => {
+    installBridge();
+
+    await renderApp();
+
+    expect(document.querySelector('[data-testid="current-icon"]')?.textContent).toBe('内置默认图标');
+    expect(document.querySelector('img.icon-preview')).toBeNull();
+  });
+
+  it('读取配置时展示已配置的图标文件名', async () => {
+    installBridge({
+      getConfig: vi.fn(async () => createConfig({ appearance: { icon: 'app-icon.png' } })),
+    });
+
+    await renderApp();
+
+    expect(document.querySelector('[data-testid="current-icon"]')?.textContent).toBe('app-icon.png');
+  });
+
+  it('选择图标后回填文件名、展示预览并随配置保存', async () => {
+    const bridge = installBridge();
+
+    await renderApp();
+    await clickButton('选择图标');
+
+    expect(bridge.pickIcon).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-testid="current-icon"]')?.textContent).toBe('app-icon.png');
+    expect(document.querySelector('img.icon-preview')?.getAttribute('src')).toBe('data:image/png;base64,AA');
+    expect(document.body.textContent).toContain('保存并重启后生效');
+
+    await submitForm();
+    const saved = bridge.saveConfig.mock.calls[0][0] as { appearance: { icon: string } };
+    expect(saved.appearance.icon).toBe('app-icon.png');
+  });
+
+  it('选择失败时展示错误且不修改草稿', async () => {
+    const bridge = installBridge({
+      pickIcon: vi.fn(async () => ({ ok: false, message: '请选择 PNG、ICO 或 ICNS 格式的图标文件' })),
+    });
+
+    await renderApp();
+    await clickButton('选择图标');
+
+    expect(bridge.pickIcon).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain('图标选择失败');
+    expect(document.body.textContent).toContain('PNG');
+    expect(document.querySelector('[data-testid="current-icon"]')?.textContent).toBe('内置默认图标');
+    expect(document.querySelector('img.icon-preview')).toBeNull();
+  });
+
+  it('恢复默认清空图标配置', async () => {
+    const bridge = installBridge({
+      getConfig: vi.fn(async () => createConfig({ appearance: { icon: 'app-icon.png' } })),
+    });
+
+    await renderApp();
+    await clickButton('恢复默认');
+
+    expect(document.querySelector('[data-testid="current-icon"]')?.textContent).toBe('内置默认图标');
+    await submitForm();
+    const saved = bridge.saveConfig.mock.calls[0][0] as { appearance: { icon: string } };
+    expect(saved.appearance.icon).toBe('');
   });
 });

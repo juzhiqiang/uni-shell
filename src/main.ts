@@ -1,11 +1,12 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { access, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   nativeImage,
@@ -18,10 +19,20 @@ import {
 
 import {
   AppController,
+  type Logger,
   type PowerMonitorPort,
   type ProxyPort,
   type WindowPort,
 } from './main/app-controller';
+import {
+  installPickedIcon,
+  loadAppIcon,
+  readConfiguredIconFileName,
+  removeUnreferencedIconFiles,
+  type IconFileSystem,
+  type IconImageFactory,
+  type ResolvedAppIcon,
+} from './main/appearance/icon-manager';
 import { registerConfigIpc, testTargetConnection } from './main/config/config-ipc';
 import { loadConfig, saveConfig } from './main/config/config-store';
 import type { AppConfig } from './main/config/config-schema';
@@ -39,6 +50,7 @@ import { applyProxy } from './main/network/proxy-manager';
 import { acquireSingleInstance, LOGIN_LAUNCH_FLAG, type SingleInstancePort } from './main/instance/single-instance';
 import type { LoginItemPort } from './main/startup/startup-manager';
 import type { ShortcutTarget, TrayPort } from './main/tray/tray-manager';
+import type { IconPickResult } from './preload/config-bridge';
 import {
   WindowManager,
   type BrowserWindowConstructorOptions,
@@ -54,7 +66,9 @@ import {
  * - 窗口经 `WindowManager`（Task 4）创建，其事件出口接到控制器的 `reportWindowEvent`；
  * - 主窗口的 `did-fail-load` / `did-navigate` 接到 `reportLoadFailure` / `reportLoadSuccess`，
  *   由控制器持有的重试控制（Task 5）完成断网恢复；
- * - 代理经默认 session 应用（Task 5 的 `applyProxy`）；电源事件经 `powerMonitor` 端口注入；
+ * - 代理经默认 session 应用（Task 5 的 `applyProxy`，接口代理语义见规格 §7）；电源事件经 `powerMonitor` 端口注入；
+ * - 应用图标（规格 §5.4）在启动前解析：用户图标（配置目录 app-icon.*）或内置默认图标，
+ *   注入窗口工厂与托盘，macOS 另设 Dock 图标；
  * - 日志使用 Task 9 的正式文件日志器；退出前由控制器刷新落盘。
  */
 
@@ -187,23 +201,74 @@ function createMainWindowChannel() {
 
 const mainWindowChannel = createMainWindowChannel();
 
-/** 托盘图标：Task 10 接入正式图标资源前，用程序生成的占位图标。 */
-function createTrayIcon() {
-  const placeholder = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAKElEQVR42mNgYGD4z0AEYBxVSF4jDJgYGX4TQsmg/0mTArRYgIlQAAPnZBcDdeqrAAAAAASUVORK5CYII=',
-  );
-  return placeholder.isEmpty() ? nativeImage.createEmpty() : placeholder.resize({ width: 16, height: 16 });
+/** 图标操作使用的文件系统能力（规格 §5.4）；由 `icon-manager` 定义最小面。 */
+const iconFileSystem: IconFileSystem = {
+  readFile: (path) => readFile(path) as Promise<Uint8Array>,
+  writeFile: (path, data) => writeFile(path, data),
+  readdir: (path) => readdir(path),
+  unlink: (path) => unlink(path),
+  access: (path) => access(path),
+};
+
+/** 镜像工厂：把 icon-manager 的最小接口桥接到 Electron `nativeImage`。 */
+const electronIconImages: IconImageFactory = {
+  fromBuffer: (data) => nativeImage.createFromBuffer(Buffer.from(data)),
+  fromDataURL: (dataUrl) => nativeImage.createFromDataURL(dataUrl),
+};
+
+/**
+ * 启动前预读配置里的图标文件名（与 `readLoggingPreferences` 同一模式）。
+ * 只做只读解析：文件缺失、损坏或字段异常时返回 null，由内置默认图标兜底。
+ */
+async function readAppearanceIconFileName(paths: ResolvedConfigPaths): Promise<string | null> {
+  try {
+    const raw = await readFile(paths.configPath, 'utf8');
+    return readConfiguredIconFileName(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 解析应用图标（规格 §5.4）：用户图标缺失、损坏或超限时回退内置默认图标。
+ * 结果在启动前一次解析，供窗口工厂、托盘与 Dock 共用；图标变化需重启生效。
+ */
+async function resolveAppIcon(paths: ResolvedConfigPaths, logger: Logger): Promise<ResolvedAppIcon> {
+  const icon = await loadAppIcon({
+    icon: await readAppearanceIconFileName(paths),
+    configDirectory: paths.writeDirectory,
+    fs: iconFileSystem,
+    images: electronIconImages,
+  });
+
+  if (icon.source === 'configured') {
+    logger.info('icon-resolved', { source: 'configured', fileName: icon.fileName });
+  } else if (icon.fallbackReason !== undefined) {
+    logger.warn('icon-fallback', { reason: icon.fallbackReason });
+  }
+
+  // 清理未被引用的残留图标文件（用户更换格式或恢复默认后）。
+  const removed = await removeUnreferencedIconFiles({
+    configDirectory: paths.writeDirectory,
+    configuredIcon: icon.fileName ?? '',
+    fs: iconFileSystem,
+  });
+  if (removed.length > 0) {
+    logger.info('icon-files-cleaned', { removed });
+  }
+
+  return icon;
 }
 
 /** 规格 §10：Windows 通知区域 / macOS 菜单栏 / Linux StatusNotifierItem 共用的托盘端口。 */
-function createElectronTrayPort(): TrayPort {
+function createElectronTrayPort(getTrayIcon: () => Electron.NativeImage): TrayPort {
   let tray: Tray | null = null;
 
   return {
     create(actions) {
       try {
         tray?.destroy();
-        tray = new Tray(createTrayIcon());
+        tray = new Tray(getTrayIcon());
         tray.setToolTip('UniShell');
 
         const menu = Menu.buildFromTemplate([
@@ -234,6 +299,38 @@ function createElectronTrayPort(): TrayPort {
       tray?.destroy();
       tray = null;
     },
+  };
+}
+
+/**
+ * 规格 §5.4：图标选择出口（配置界面「选择图标」按钮）。
+ * 打开文件对话框 → 校验并复制到配置目录 → 回传文件名与预览；
+ * 只回传结果，不向渲染进程暴露任意文件路径读写能力。
+ */
+function createIconPickPort(getConfigWindow: () => BrowserWindow | null) {
+  return async (): Promise<IconPickResult> => {
+    const paths = activeController?.configPaths;
+    if (paths === undefined) {
+      return { ok: false, message: '配置路径尚未解析，无法选择图标' };
+    }
+
+    const options: Electron.OpenDialogOptions = {
+      title: '选择应用图标',
+      properties: ['openFile'],
+      filters: [{ name: '图标文件', extensions: ['png', 'ico', 'icns'] }],
+    };
+    const parent = getConfigWindow();
+    const selection = parent !== null ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+    if (selection.canceled || selection.filePaths.length === 0) {
+      return { ok: false, canceled: true, message: '已取消选择' };
+    }
+
+    return installPickedIcon({
+      pickedPath: selection.filePaths[0],
+      configDirectory: paths.writeDirectory,
+      fs: iconFileSystem,
+      images: electronIconImages,
+    });
   };
 }
 
@@ -326,9 +423,18 @@ function createShortcutTarget(): ShortcutTarget {
   };
 }
 
-/** 窗口工厂：把窗口层的中立选项映射为 Electron 的构造选项。 */
-function createBrowserWindow(options: BrowserWindowConstructorOptions): BrowserWindow {
-  return new BrowserWindow(options as unknown as Electron.BrowserWindowConstructorOptions);
+/**
+ * 窗口工厂：把窗口层的中立选项映射为 Electron 的构造选项，并注入应用图标（规格 §5.4）。
+ * `icon` 在启动前解析（用户图标或内置默认图标）；Windows 任务栏图标随窗口图标生效。
+ */
+function createBrowserWindowFactory(getWindowIcon: () => Electron.NativeImage | undefined) {
+  return (options: BrowserWindowConstructorOptions): BrowserWindow => {
+    const icon = getWindowIcon();
+    return new BrowserWindow({
+      ...options,
+      ...(icon !== undefined ? { icon } : {}),
+    } as unknown as Electron.BrowserWindowConstructorOptions);
+  };
 }
 
 /**
@@ -485,8 +591,18 @@ async function bootstrap(): Promise<void> {
     },
   });
 
+  // 应用图标（规格 §5.4）：启动前解析用户图标或内置默认图标；缺失/损坏回退并记日志。
+  const appIcon = await resolveAppIcon(paths, logger);
+  const windowIcon = appIcon.image as unknown as Electron.NativeImage;
+  const trayIcon = appIcon.trayImage as unknown as Electron.NativeImage;
+
+  // macOS：Dock 与应用切换器图标只能由进程自身设置；窗口 icon 选项在 macOS 不生效。
+  if (process.platform === 'darwin' && !appIcon.image.isEmpty()) {
+    app.dock?.setIcon(windowIcon);
+  }
+
   const windowManager = new WindowManager({
-    createWindow: createBrowserWindow,
+    createWindow: createBrowserWindowFactory(() => windowIcon),
     capabilities,
     screen,
     preloadPath: preloadPath(),
@@ -515,7 +631,7 @@ async function bootstrap(): Promise<void> {
     loadConfig: (resolved) => loadConfig({ paths: resolved }),
     capabilities,
     window: windowPort,
-    tray: createElectronTrayPort(),
+    tray: createElectronTrayPort(() => trayIcon),
     loginItem: createElectronLoginItemPort(),
     shortcutTarget: createShortcutTarget(),
     proxy: createElectronProxyPort(),
@@ -525,7 +641,7 @@ async function bootstrap(): Promise<void> {
 
   activeController = controller;
 
-  // 配置界面 IPC：启动流程解析出配置路径后，才注册五个白名单通道（Task 8）。
+  // 配置界面 IPC：启动流程解析出配置路径后，才注册六个白名单通道（Task 8 + 规格 §5.4 图标选择）。
   registerConfigIpc({
     host: ipcMain,
     paths: () => activeController?.configPaths,
@@ -554,6 +670,7 @@ async function bootstrap(): Promise<void> {
       })();
     },
     testConnection: (url, network) => testTargetConnection(url, network),
+    pickIcon: createIconPickPort(() => windowManager.getConfigWindow()),
   });
 
   await controller.start({

@@ -361,6 +361,61 @@ describe('testConnection 通道', () => {
   });
 });
 
+describe('图标选择通道（规格 §5.4）', () => {
+  it('成功时回传文件名与预览并记录日志', async () => {
+    const pickIcon = vi.fn(async () => ({ ok: true, fileName: 'app-icon.png', previewDataUrl: 'data:image/png;base64,AA' }));
+    const harness = createHarness({ overrides: { pickIcon } });
+    registerConfigIpc(harness.deps);
+
+    const result = (await call(harness, CONFIG_IPC_CHANNELS.iconPick)) as {
+      ok: boolean;
+      fileName: string;
+      previewDataUrl: string;
+    };
+
+    expect(pickIcon).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: true, fileName: 'app-icon.png', previewDataUrl: 'data:image/png;base64,AA' });
+    expect(harness.logger.info).toHaveBeenCalledWith('icon-picked', { fileName: 'app-icon.png' });
+  });
+
+  it('用户取消或选择被拒时回传失败原因且不写配置', async () => {
+    const pickIcon = vi.fn(async () => ({ ok: false, message: '请选择 PNG、ICO 或 ICNS 格式的图标文件' }));
+    const harness = createHarness({ overrides: { pickIcon } });
+    registerConfigIpc(harness.deps);
+
+    const result = (await call(harness, CONFIG_IPC_CHANNELS.iconPick)) as { ok: boolean; message: string };
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('PNG');
+    expect(harness.logger.warn).toHaveBeenCalledWith('icon-pick-rejected', { message: result.message });
+    expect(harness.files.size).toBe(0);
+  });
+
+  it('选择过程抛出时按失败处理', async () => {
+    const pickIcon = vi.fn(async () => {
+      throw new Error('对话框打开失败');
+    });
+    const harness = createHarness({ overrides: { pickIcon } });
+    registerConfigIpc(harness.deps);
+
+    const result = (await call(harness, CONFIG_IPC_CHANNELS.iconPick)) as { ok: boolean; message: string };
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe('对话框打开失败');
+    expect(harness.logger.warn).toHaveBeenCalledWith('icon-pick-failed', { message: '对话框打开失败' });
+  });
+
+  it('未注入选择出口时返回可操作的失败信息', async () => {
+    const harness = createHarness();
+    registerConfigIpc(harness.deps);
+
+    const result = (await call(harness, CONFIG_IPC_CHANNELS.iconPick)) as { ok: boolean; message: string };
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('不支持选择图标文件');
+  });
+});
+
 describe('testTargetConnection', () => {
   const network: NetworkConfig = {
     proxyMode: 'direct',

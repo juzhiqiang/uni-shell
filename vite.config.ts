@@ -14,7 +14,7 @@ export default defineConfig({
       },
     },
   },
-  // 本地配置窗口的最小 preload：只暴露五个具名 IPC 方法（rules/security.md）。
+  // 本地配置窗口的最小 preload：只暴露六个具名 IPC 方法（rules/security.md）。
   // 沙箱 preload 必须是 CJS；产物路径与主进程 `preloadPath()` 约定一致。
   preload: {
     build: {

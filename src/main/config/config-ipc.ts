@@ -1,12 +1,12 @@
 /**
  * 配置界面 IPC 主进程侧注册与受控保存流程。
  *
- * 规则来源：规格 v2.1 §5.1（界面展示实际路径）、§5.2（临时文件加原子替换并保留备份）、
- * §5.3（未保存关闭不得修改原配置）、§14.1（保存、重启和目标页面加载）
+ * 规则来源：规格 v2.1.1 §5.1（界面展示实际路径）、§5.2（临时文件加原子替换并保留备份）、
+ * §5.3（未保存关闭不得修改原配置）、§5.4（自定义图标）、§14.1（保存、重启和目标页面加载）
  * 与 `rules/security.md`「preload 只暴露显式白名单 IPC」。
  *
  * 通道表与白名单判定复用 `src/preload/config-bridge.ts`（纯模块，不导入 Electron），
- * 主进程只注册表内五个通道，渲染进程只能经 `window.uniShell` 的五个具名方法到达这里。
+ * 主进程只注册表内六个通道，渲染进程只能经 `window.uniShell` 的六个具名方法到达这里。
  *
  * 本模块不直接导入 Electron：`ipcMain`、文件系统、连接测试出口都由调用方注入，
  * 因此可在纯 Node 环境下完整测试。
@@ -22,6 +22,7 @@ import {
   isConfigIpcChannel,
   type ConfigIpcChannel,
   type ConnectionResult,
+  type IconPickResult,
   type SaveResult,
 } from '../../preload/config-bridge';
 
@@ -50,6 +51,8 @@ export interface ConfigIpcDeps {
   restart?(): void;
   /** 连通性测试出口；缺省时使用本文件内置的 fetch 实现。 */
   testConnection?(url: string, network: NetworkConfig): Promise<ConnectionResult>;
+  /** 图标选择出口（规格 §5.4）；由主进程用文件对话框 + icon-manager 注入。 */
+  pickIcon?(): Promise<IconPickResult>;
 }
 
 export interface ConfigIpcRegistration {
@@ -76,7 +79,7 @@ function blankConfig(): AppConfig {
   return { ...defaults, targetUrl: '' };
 }
 
-/** 注册五个白名单通道；返回最近一次有效配置的读取入口。 */
+/** 注册六个白名单通道；返回最近一次有效配置的读取入口。 */
 export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
   let lastConfig: AppConfig | undefined;
 
@@ -169,12 +172,37 @@ export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
     return testTargetConnection(url, network as NetworkConfig);
   }
 
+  /**
+   * 规格 §5.4：打开文件选择对话框并把选定图标复制到配置目录。
+   * 只回传文件名与预览 data URL；不向渲染进程暴露任意文件路径读写能力。
+   */
+  async function handlePickIcon(): Promise<IconPickResult> {
+    if (deps.pickIcon === undefined) {
+      return { ok: false, message: '当前环境不支持选择图标文件' };
+    }
+    try {
+      const result = await deps.pickIcon();
+      if (result.canceled) {
+        deps.logger?.info('icon-pick-canceled');
+      } else if (result.ok) {
+        deps.logger?.info('icon-picked', { fileName: result.fileName });
+      } else {
+        deps.logger?.warn('icon-pick-rejected', { message: result.message });
+      }
+      return result;
+    } catch (error) {
+      deps.logger?.warn('icon-pick-failed', { message: describeError(error) });
+      return { ok: false, message: describeError(error) };
+    }
+  }
+
   const listeners = new Map<ConfigIpcChannel, (args: unknown[]) => Promise<unknown>>([
     [CONFIG_IPC_CHANNELS.getConfig, () => handleGetConfig()],
     [CONFIG_IPC_CHANNELS.validateConfig, (args) => Promise.resolve(validateConfig(args[0]))],
     [CONFIG_IPC_CHANNELS.saveConfig, (args) => handleSaveConfig(args[0])],
     [CONFIG_IPC_CHANNELS.resetConfig, () => handleResetConfig()],
     [CONFIG_IPC_CHANNELS.testConnection, (args) => handleTestConnection(args)],
+    [CONFIG_IPC_CHANNELS.iconPick, () => handlePickIcon()],
   ]);
 
   for (const channel of Object.values(CONFIG_IPC_CHANNELS)) {

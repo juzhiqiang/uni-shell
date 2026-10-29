@@ -20,6 +20,9 @@ export const UNI_SHELL_BRIDGE_KEY = 'uniShell';
  *
  * 主进程侧（Task 8）必须使用同一份通道表注册 `ipcMain.handle`，
  * 并通过 `isConfigIpcChannel` 拒绝表外通道。
+ *
+ * 规格 v2.1.1 §11：白名单共六个具名通道；`iconPick` 只打开文件选择对话框
+ * 并把选定图标复制到配置目录，不提供通用文件读写能力。
  */
 export const CONFIG_IPC_CHANNELS = {
   getConfig: 'uni-shell:config:get',
@@ -27,6 +30,7 @@ export const CONFIG_IPC_CHANNELS = {
   saveConfig: 'uni-shell:config:save',
   resetConfig: 'uni-shell:config:reset',
   testConnection: 'uni-shell:network:test',
+  iconPick: 'uni-shell:icon:pick',
 } as const;
 
 export type ConfigIpcChannel = (typeof CONFIG_IPC_CHANNELS)[keyof typeof CONFIG_IPC_CHANNELS];
@@ -57,16 +61,30 @@ export interface ConnectionResult {
   durationMs?: number;
 }
 
+/** 图标选择结果（规格 §5.4）。 */
+export interface IconPickResult {
+  ok: boolean;
+  /** 用户取消选择时为 true；界面按无操作处理，不展示错误。 */
+  canceled?: boolean;
+  /** 成功时复制到配置目录的图标文件名。 */
+  fileName?: string;
+  /** 成功时供界面展示的预览 data URL。 */
+  previewDataUrl?: string;
+  /** 失败时的可操作错误信息。 */
+  message?: string;
+}
+
 /** 白名单调用出口；通道类型受白名单约束，无法传入表外通道。 */
 export type ConfigInvoke = (channel: ConfigIpcChannel, ...args: unknown[]) => Promise<unknown>;
 
-/** 暴露给配置界面的 API：固定五个具名方法，没有通用发送能力。 */
+/** 暴露给配置界面的 API：固定六个具名方法，没有通用发送能力。 */
 export interface ConfigBridge {
   getConfig(): Promise<AppConfig>;
   validateConfig(input: unknown): Promise<ValidationResult<AppConfig>>;
   saveConfig(input: unknown): Promise<SaveResult>;
   resetConfig(): Promise<AppConfig>;
   testConnection(url: string, network: NetworkConfig): Promise<ConnectionResult>;
+  pickIcon(): Promise<IconPickResult>;
 }
 
 /**
@@ -83,6 +101,7 @@ export function createConfigBridge(invoke: ConfigInvoke): ConfigBridge {
     resetConfig: () => invoke(CONFIG_IPC_CHANNELS.resetConfig) as Promise<AppConfig>,
     testConnection: (url, network) =>
       invoke(CONFIG_IPC_CHANNELS.testConnection, url, network) as Promise<ConnectionResult>,
+    pickIcon: () => invoke(CONFIG_IPC_CHANNELS.iconPick) as Promise<IconPickResult>,
   };
 }
 

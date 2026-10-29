@@ -181,6 +181,39 @@ fieldset:disabled {
   color: var(--color-text-muted);
 }
 
+.icon-preview {
+  width: 64px;
+  height: 64px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  object-fit: contain;
+}
+
+.field-icon-current {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+.field-caption {
+  color: var(--color-text-muted);
+}
+
+.icon-current {
+  color: var(--color-text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+}
+
+.field-hint {
+  margin: 8px 0 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .actions {
   display: flex;
   gap: 12px;

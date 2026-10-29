@@ -26,9 +26,10 @@ function createInvokeSpy(): { invoke: ReturnType<typeof vi.fn>; calls: unknown[]
 }
 
 describe('白名单通道表', () => {
-  it('恰好定义五个具名通道', () => {
+  it('恰好定义六个具名通道', () => {
     expect(Object.keys(CONFIG_IPC_CHANNELS).sort()).toEqual([
       'getConfig',
+      'iconPick',
       'resetConfig',
       'saveConfig',
       'testConnection',
@@ -54,12 +55,13 @@ describe('白名单通道表', () => {
 });
 
 describe('createConfigBridge', () => {
-  it('只暴露五个具名方法，没有通用发送能力', () => {
+  it('只暴露六个具名方法，没有通用发送能力', () => {
     const { invoke } = createInvokeSpy();
     const bridge = createConfigBridge(invoke as never);
 
     expect(Object.keys(bridge).sort()).toEqual([
       'getConfig',
+      'pickIcon',
       'resetConfig',
       'saveConfig',
       'testConnection',
@@ -82,10 +84,12 @@ describe('createConfigBridge', () => {
       proxyMode: 'direct',
       proxyServer: '',
       proxyBypass: '',
+      apiProxyHosts: [],
       retryIntervalSec: 3,
       requestTimeoutSec: 20,
       offlinePageEnabled: true,
     });
+    await bridge.pickIcon();
 
     expect(calls).toEqual([
       ['uni-shell:config:get'],
@@ -99,11 +103,13 @@ describe('createConfigBridge', () => {
           proxyMode: 'direct',
           proxyServer: '',
           proxyBypass: '',
+          apiProxyHosts: [],
           retryIntervalSec: 3,
           requestTimeoutSec: 20,
           offlinePageEnabled: true,
         },
       ],
+      ['uni-shell:icon:pick'],
     ]);
   });
 
