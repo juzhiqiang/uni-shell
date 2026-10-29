@@ -11,7 +11,8 @@ import {
   type WindowPort,
 } from '../../src/main/app-controller';
 import { createDefaultConfig, type AppConfig } from '../../src/main/config/config-schema';
-import { loadConfig, type ConfigFileSystem } from '../../src/main/config/config-store';
+import { createConfigService } from '../../src/main/config/config-service';
+import type { ConfigFileSystem } from '../../src/main/config/config-store';
 import type { NetworkConfig } from '../../src/main/config/config-types';
 import { createLogger, type LogFileSystem } from '../../src/main/logging/logger';
 import { applyProxy } from '../../src/main/network/proxy-manager';
@@ -271,34 +272,50 @@ function baseConfig(): AppConfig {
 }
 
 /** 组装带真实日志与真实配置读写的控制器依赖。 */
-function createDeps(overrides: Partial<AppControllerDeps> = {}) {
-  const memory = createMemoryFs();
+function createDeps(
+  overrides: Partial<AppControllerDeps> & {
+    memory?: ReturnType<typeof createMemoryFs>;
+    fakeWindow?: ReturnType<typeof createFakeWindow>;
+    session?: ReturnType<typeof createFakeSession>;
+    logger?: Logger;
+  } = {},
+) {
+  const memory = overrides.memory ?? createMemoryFs();
   const paths = resolveConfigPaths({ platform: 'linux', homeDir: HOME_DIR, env: {}, argv: ['app'] });
-  const fakeWindow = createFakeWindow();
-  const session = createFakeSession();
+  const fakeWindow = overrides.fakeWindow ?? createFakeWindow();
+  const session = overrides.session ?? createFakeSession();
 
-  const logger = createLogger({
-    platform: 'linux',
-    homeDir: HOME_DIR,
-    env: {},
-    context: {
-      appVersion: '0.1.0',
-      electronVersion: '45.0.0',
-      arch: 'x64',
-      desktopEnvironment: 'GNOME',
-      sessionType: 'x11',
-    },
-    fs: memory.fs,
-    now: () => NOW,
-  });
+  const logger =
+    overrides.logger ??
+    createLogger({
+      platform: 'linux',
+      homeDir: HOME_DIR,
+      env: {},
+      context: {
+        appVersion: '0.1.0',
+        electronVersion: '45.0.0',
+        arch: 'x64',
+        desktopEnvironment: 'GNOME',
+        sessionType: 'x11',
+      },
+      fs: memory.fs,
+      now: () => NOW,
+    });
 
   const proxy: ProxyPort = {
     apply: (config: NetworkConfig) => applyProxy(session.session, config),
   };
 
+  const configService =
+    overrides.configService ??
+    createConfigService({
+      paths,
+      fs: memory.fs,
+      now: () => NOW,
+    });
+
   const deps: AppControllerDeps = {
-    resolvePaths: () => paths,
-    loadConfig: (resolved: ResolvedConfigPaths) => loadConfig({ paths: resolved, fs: memory.fs, now: () => NOW }),
+    configService,
     capabilities: CAPABILITIES,
     window: fakeWindow.window,
     log: logger,
@@ -343,7 +360,8 @@ describe('损坏配置恢复（规格 §5.3、§12）', () => {
 
     // 用户在配置界面修正并保存；受控重启后进入新的启动流程。
     writeConfig(memory, paths, baseConfig());
-    const restarted = new AppController(deps);
+    const { deps: restartDeps } = createDeps({ memory, fakeWindow, logger });
+    const restarted = new AppController(restartDeps);
     await restarted.start(START_OPTIONS);
 
     expect(restarted.currentState).toBe('running');

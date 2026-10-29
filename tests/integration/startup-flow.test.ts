@@ -144,21 +144,52 @@ function createFakeShortcutTarget() {
   };
 }
 
-function createDeps(overrides: Partial<AppControllerDeps> = {}) {
+interface CreateDepsOverrides extends Partial<AppControllerDeps> {
+  loadConfig?: () => Promise<ConfigLoadResult>;
+}
+
+function createDeps(overrides: CreateDepsOverrides = {}) {
   const fakeWindow = createFakeWindow();
   const fakeTray = createFakeTray();
   const fakeLoginItem = createFakeLoginItem();
   const fakeShortcut = createFakeShortcutTarget();
   const logs: Array<{ level: string; event: string; data?: unknown }> = [];
 
+  let configService = overrides.configService;
+  if (!configService) {
+    const loadFn =
+      overrides.loadConfig ??
+      (async (): Promise<ConfigLoadResult> => ({
+        status: 'loaded',
+        path: PATHS.configPath,
+        source: 'cli',
+        config: createDefaultConfig('https://example.com'),
+      }));
+
+    let loadedConfig: AppConfig | undefined;
+    configService = {
+      paths: PATHS,
+      load: vi.fn(async () => {
+        const res = await loadFn();
+        loadedConfig = res.status === 'loaded' ? res.config : undefined;
+        return res;
+      }),
+      reload: vi.fn(async () => {
+        const res = await loadFn();
+        loadedConfig = res.status === 'loaded' ? res.config : undefined;
+        return res;
+      }),
+      current: () => loadedConfig,
+      save: vi.fn(async () => {}),
+      onChange: () => () => {},
+    };
+  }
+
+  const cleanOverrides = { ...overrides };
+  delete cleanOverrides.loadConfig;
+
   const deps: AppControllerDeps = {
-    resolvePaths: () => PATHS,
-    loadConfig: async (): Promise<ConfigLoadResult> => ({
-      status: 'loaded',
-      path: PATHS.configPath,
-      source: 'cli',
-      config: createDefaultConfig('https://example.com'),
-    }),
+    configService,
     capabilities: capabilities(),
     window: fakeWindow.window,
     tray: fakeTray.port,
@@ -170,7 +201,7 @@ function createDeps(overrides: Partial<AppControllerDeps> = {}) {
       error: (event, data) => logs.push({ level: 'error', event, data }),
       close: async () => {},
     },
-    ...overrides,
+    ...cleanOverrides,
   };
 
   return { deps, fakeWindow, fakeTray, fakeLoginItem, fakeShortcut, logs };

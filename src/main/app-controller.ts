@@ -16,7 +16,7 @@
 
 import type { AppConfig } from './config/config-schema';
 import type { NetworkConfig } from './config/config-types';
-import type { ConfigLoadResult } from './config/config-store';
+import type { ConfigService } from './config/config-service';
 import type { Logger } from './logging/logger';
 import type { ProxyApplyResult } from './network/proxy-manager';
 import {
@@ -25,7 +25,7 @@ import {
   isIgnorableLoadFailure,
   type LoadFailureDetails,
 } from './network/retry-controller';
-import type { ResolveConfigPathsOptions, ResolvedConfigPaths } from './platform/config-paths';
+import type { ResolvedConfigPaths } from './platform/config-paths';
 import type { PlatformCapabilities } from './platform/platform-adapter';
 import { detectLaunchContext, type LaunchContext, type LaunchSource } from './instance/single-instance';
 import {
@@ -91,8 +91,7 @@ export interface SingleInstanceHandle {
 }
 
 export interface AppControllerDeps {
-  resolvePaths: (options: ResolveConfigPathsOptions) => ResolvedConfigPaths;
-  loadConfig: (paths: ResolvedConfigPaths) => Promise<ConfigLoadResult>;
+  configService: ConfigService;
   capabilities: PlatformCapabilities;
   window: WindowPort;
   tray?: TrayPort;
@@ -191,12 +190,7 @@ export class AppController {
       workingDirectory: options.workingDirectory,
     };
 
-    this.paths = this.deps.resolvePaths({
-      platform: process.platform as ResolveConfigPathsOptions['platform'],
-      argv: options.argv,
-      env: options.env,
-      executablePath: process.execPath,
-    });
+    this.paths = this.deps.configService.paths;
 
     log.info('startup', {
       source: this.context.source,
@@ -213,7 +207,7 @@ export class AppController {
     // 休眠/唤醒诊断覆盖全部启动路径（含配置界面驻留）。
     this.subscribePowerMonitor();
 
-    const result = await this.deps.loadConfig(this.paths);
+    const result = await this.deps.configService.load();
 
     if (result.status !== 'loaded' || !result.config) {
       // 规格 §5.3：文件不存在、JSON 错误、字段错误或网址无效时打开配置界面。

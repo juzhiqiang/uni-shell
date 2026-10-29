@@ -5,17 +5,16 @@
  * §5.3（未保存关闭不得修改原配置）、§5.4（自定义图标）、§14.1（保存、重启和目标页面加载）
  * 与 `rules/security.md`「preload 只暴露显式白名单 IPC」。
  *
- * 通道表与白名单判定复用 `src/preload/config-bridge.ts`（纯模块，不导入 Electron），
+ * 通道表与白名单判定复用 `src/shared/ipc-contract.ts`（纯模块，不导入 Electron），
  * 主进程只注册表内六个通道，渲染进程只能经 `window.uniShell` 的六个具名方法到达这里。
  *
- * 本模块不直接导入 Electron：`ipcMain`、文件系统、连接测试出口都由调用方注入，
+ * 本模块不直接导入 Electron：`ipcMain`、配置服务、连接测试出口都由调用方注入，
  * 因此可在纯 Node 环境下完整测试。
  */
 
 import type { AppConfig, NetworkConfig } from './config-types';
 import { createDefaultConfig, validateConfig, type ValidationIssue } from './config-schema';
-import type { ConfigFileSystem, ConfigLoadResult, SaveConfigOptions } from './config-store';
-import type { ResolvedConfigPaths } from '../platform/config-paths';
+import type { ConfigService } from './config-service';
 import type { Logger } from '../logging/logger';
 import {
   CONFIG_IPC_CHANNELS,
@@ -34,14 +33,8 @@ export interface ConfigIpcHost {
 export interface ConfigIpcDeps {
   /** 通道注册宿主；生产环境传 Electron `ipcMain`。 */
   host: ConfigIpcHost;
-  /** 当前生效的配置路径；启动流程完成前为 undefined。 */
-  paths(): ResolvedConfigPaths | undefined;
-  loadConfig(paths: ResolvedConfigPaths): Promise<ConfigLoadResult>;
-  saveConfig(config: AppConfig, options: SaveConfigOptions): Promise<void>;
-  /** 文件系统；缺省时由 config-store 使用 Node fs。 */
-  fs?: ConfigFileSystem;
-  /** 时间源，注入以便测试确定性生成备份与临时文件名。 */
-  now?: () => Date;
+  /** 单一权威配置服务。 */
+  service: ConfigService;
   logger?: Logger;
   /** 写入成功并落盘后调用，用于同步登录项等副作用；失败不阻塞重启。 */
   onSaved?(config: AppConfig, previous: AppConfig | undefined): Promise<void> | void;
@@ -81,17 +74,12 @@ function blankConfig(): AppConfig {
 
 /** 注册六个白名单通道；返回最近一次有效配置的读取入口。 */
 export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
-  let lastConfig: AppConfig | undefined;
+  let uiDraft: AppConfig | undefined;
 
   async function handleGetConfig(): Promise<AppConfig> {
-    const paths = deps.paths();
-    if (paths === undefined) {
-      throw new Error('配置路径尚未解析，无法读取配置');
-    }
-
-    const result = await deps.loadConfig(paths);
+    const result = await deps.service.reload();
     if (result.status === 'loaded' && result.config !== undefined) {
-      lastConfig = result.config;
+      uiDraft = undefined;
       return result.config;
     }
 
@@ -101,8 +89,8 @@ export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
       status: result.status,
       reason: result.reason,
     });
-    lastConfig = blankConfig();
-    return lastConfig;
+    uiDraft = blankConfig();
+    return uiDraft;
   }
 
   async function handleSaveConfig(input: unknown): Promise<SaveResult> {
@@ -112,21 +100,18 @@ export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
       return { ok: false, message: `配置校验失败：${formatIssues(validation.issues)}` };
     }
 
-    const paths = deps.paths();
-    if (paths === undefined) {
-      return { ok: false, message: '配置路径尚未解析，无法保存' };
-    }
+    const paths = deps.service.paths;
+    const previous = deps.service.current();
 
     try {
-      await deps.saveConfig(validation.value, { paths, fs: deps.fs, now: deps.now });
+      await deps.service.save(validation.value);
+      uiDraft = undefined;
     } catch (error) {
       // 规格 §5.2：写入失败不得静默，错误信息必须可操作，且不触达重启流程。
       deps.logger?.error('config-save-failed', { path: paths.writePath, message: describeError(error) });
       return { ok: false, message: describeError(error), configPath: paths.writePath };
     }
 
-    const previous = lastConfig;
-    lastConfig = validation.value;
     deps.logger?.info('config-saved', { path: paths.writePath, source: paths.writeSource });
 
     try {
@@ -145,8 +130,9 @@ export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
 
   async function handleResetConfig(): Promise<AppConfig> {
     // 重置只影响界面草稿：保留最近一次有效 targetUrl（首次启动为空），其余恢复默认值。
-    // 不写盘、不更新 lastConfig——是否落盘完全由用户显式保存决定（规格 §5.3）。
-    const targetUrl = lastConfig?.targetUrl ?? '';
+    // 不写盘、不更新配置——是否落盘完全由用户显式保存决定（规格 §5.3）。
+    const current = deps.service.current() ?? uiDraft;
+    const targetUrl = current?.targetUrl ?? '';
     const defaults = createDefaultConfig(targetUrl.length > 0 ? targetUrl : 'http://localhost');
     const reset: AppConfig = { ...defaults, targetUrl };
     deps.logger?.info('config-reset-defaults', { targetUrlPreserved: targetUrl.length > 0 });
@@ -160,7 +146,7 @@ export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
     }
 
     // 用当前配置做壳复用权威校验：网址与网络段（含 fixed/PAC 必填、凭据拒绝）不过就不测。
-    const base = lastConfig ?? blankConfig();
+    const base = deps.service.current() ?? uiDraft ?? blankConfig();
     const validation = validateConfig({ ...base, targetUrl: url, network });
     if (!validation.ok) {
       return { ok: false, message: `配置校验失败：${formatIssues(validation.issues)}` };
@@ -217,7 +203,7 @@ export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
     deps.host.handle(channel, (_event, ...args) => listener(args));
   }
 
-  return { getLastConfig: () => lastConfig };
+  return { getLastConfig: () => deps.service.current() ?? uiDraft };
 }
 
 /** 连通性测试的可注入出口。 */

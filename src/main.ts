@@ -26,16 +26,15 @@ import {
 import {
   installPickedIcon,
   loadAppIcon,
-  readConfiguredIconFileName,
   removeUnreferencedIconFiles,
   type IconFileSystem,
   type IconImageFactory,
   type ResolvedAppIcon,
 } from './main/appearance/icon-manager';
 import { registerConfigIpc, testTargetConnection } from './main/config/config-ipc';
-import { loadConfig, saveConfig } from './main/config/config-store';
+import { createConfigService, type ConfigService } from './main/config/config-service';
 import type { AppConfig } from './main/config/config-schema';
-import type { LogLevel, NetworkConfig } from './main/config/config-types';
+import type { NetworkConfig } from './main/config/config-types';
 import { createLogger, type Logger } from './main/logging/logger';
 import {
   CONFIG_FILE_NAME,
@@ -49,7 +48,7 @@ import { applyProxy } from './main/network/proxy-manager';
 import { acquireSingleInstance, LOGIN_LAUNCH_FLAG, type SingleInstancePort } from './main/instance/single-instance';
 import type { LoginItemPort } from './main/startup/startup-manager';
 import type { ShortcutTarget, TrayPort } from './main/tray/tray-manager';
-import type { IconPickResult } from './preload/config-bridge';
+import type { IconPickResult } from './shared/ipc-contract';
 import {
   WindowManager,
   type BrowserWindowConstructorOptions,
@@ -153,27 +152,6 @@ async function loadOfflinePage(window: BrowserWindow): Promise<void> {
 }
 
 /**
- * 预读配置的 `logging` 段，供 logger 在控制器构造前确定级别与保留天数。
- *
- * 只做只读解析：文件缺失、损坏或字段异常时返回空，由 logger 的规格默认值
- * （info / 14 天）兜底；损坏文件的隔离由控制器的正式加载负责，不在这里重复处理。
- */
-async function readLoggingPreferences(
-  paths: ResolvedConfigPaths,
-): Promise<{ level?: LogLevel; retentionDays?: number }> {
-  try {
-    const raw = await readFile(paths.configPath, 'utf8');
-    const parsed = JSON.parse(raw) as { logging?: { level?: unknown; retentionDays?: unknown } };
-    return {
-      level: typeof parsed.logging?.level === 'string' ? (parsed.logging.level as LogLevel) : undefined,
-      retentionDays: typeof parsed.logging?.retentionDays === 'number' ? parsed.logging.retentionDays : undefined,
-    };
-  } catch {
-    return {};
-  }
-}
-
-/**
  * 主窗口就绪通道：快捷键宿主窗口在延迟结束后才创建，需要延后绑定。
  * 同一窗口只绑定一次，重建窗口（关闭后再次创建）时重新绑定。
  */
@@ -224,25 +202,16 @@ const electronIconImages: IconImageFactory = {
 };
 
 /**
- * 启动前预读配置里的图标文件名（与 `readLoggingPreferences` 同一模式）。
- * 只做只读解析：文件缺失、损坏或字段异常时返回 null，由内置默认图标兜底。
- */
-async function readAppearanceIconFileName(paths: ResolvedConfigPaths): Promise<string | null> {
-  try {
-    const raw = await readFile(paths.configPath, 'utf8');
-    return readConfiguredIconFileName(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-}
-
-/**
  * 解析应用图标（规格 §5.4）：用户图标缺失、损坏或超限时回退内置默认图标。
  * 结果在启动前一次解析，供窗口工厂、托盘与 Dock 共用；图标变化需重启生效。
  */
-async function resolveAppIcon(paths: ResolvedConfigPaths, logger: Logger): Promise<ResolvedAppIcon> {
+async function resolveAppIcon(
+  paths: ResolvedConfigPaths,
+  configuredIcon: string | null | undefined,
+  logger: Logger,
+): Promise<ResolvedAppIcon> {
   const icon = await loadAppIcon({
-    icon: await readAppearanceIconFileName(paths),
+    icon: configuredIcon ?? null,
     configDirectory: paths.writeDirectory,
     fs: iconFileSystem,
     images: electronIconImages,
@@ -467,13 +436,13 @@ function attachMainWindowDiagnostics(window: BrowserWindow): void {
  * 记住最近一次配置：托盘「重新加载网页」与唤醒恢复都要重新加载目标网址，
  * 离线页展示后更不能重载离线页本身。
  */
-function createWindowPortAdapter(windowManager: WindowManager<BrowserWindow>): WindowPort & {
+function createWindowPortAdapter(
+  windowManager: WindowManager<BrowserWindow>,
+  configService: ConfigService,
+): WindowPort & {
   closeStaleWindows(): void;
 } {
-  let lastConfig: AppConfig | undefined;
-
   const createMain = async (config: AppConfig): Promise<void> => {
-    lastConfig = config;
     await windowManager.createMainWindow(config);
   };
 
@@ -487,8 +456,9 @@ function createWindowPortAdapter(windowManager: WindowManager<BrowserWindow>): W
     async showAndFocusMain() {
       // 窗口已被销毁（如关闭后再次唤醒）时按最近配置重建；重建窗口可能按
       // `startup.initialState` 隐藏创建，调用方已明确要展示，因此显式显示。
-      if (!windowManager.showMainWindow() && lastConfig !== undefined) {
-        await createMain(lastConfig);
+      const current = configService.current();
+      if (!windowManager.showMainWindow() && current !== undefined) {
+        await createMain(current);
         windowManager.showMainWindow();
       }
     },
@@ -499,14 +469,15 @@ function createWindowPortAdapter(windowManager: WindowManager<BrowserWindow>): W
 
     async reloadMain() {
       const main = windowManager.getMainWindow();
+      const current = configService.current();
       // 主窗口只可能由 createMainWindow 创建，因此窗口存在即有最近配置；
       // 离线页展示后必须重新加载目标网址，而不是重载离线页本身。
-      if (main !== null && lastConfig !== undefined) {
-        await main.loadURL(lastConfig.targetUrl);
+      if (main !== null && current !== undefined) {
+        await main.loadURL(current.targetUrl);
         return;
       }
-      if (lastConfig !== undefined) {
-        await createMain(lastConfig);
+      if (current !== undefined) {
+        await createMain(current);
         windowManager.showMainWindow();
       }
     },
@@ -580,13 +551,16 @@ async function bootstrap(): Promise<void> {
     executablePath: process.execPath,
   });
 
+  const configService = createConfigService({ paths });
+  const initialLoad = await configService.load();
+  const initialConfig = initialLoad.config;
+
   // 正式文件日志器（Task 9）：级别与保留天数取配置 logging 段，读不到用规格默认值。
-  const loggingPreferences = await readLoggingPreferences(paths);
   const logger = createLogger({
     platform: process.platform as NodePlatform,
     env: process.env as Record<string, string | undefined>,
-    level: loggingPreferences.level,
-    retentionDays: loggingPreferences.retentionDays,
+    level: initialConfig?.logging.level,
+    retentionDays: initialConfig?.logging.retentionDays,
     context: {
       appVersion: app.getVersion(),
       electronVersion: process.versions.electron ?? '',
@@ -601,7 +575,7 @@ async function bootstrap(): Promise<void> {
   });
 
   // 应用图标（规格 §5.4）：启动前解析用户图标或内置默认图标；缺失/损坏回退并记日志。
-  const appIcon = await resolveAppIcon(paths, logger);
+  const appIcon = await resolveAppIcon(paths, initialConfig?.appearance.icon, logger);
   const windowIcon = appIcon.image as unknown as Electron.NativeImage;
   const trayIcon = appIcon.trayImage as unknown as Electron.NativeImage;
 
@@ -633,11 +607,10 @@ async function bootstrap(): Promise<void> {
     },
   });
 
-  const windowPort = createWindowPortAdapter(windowManager);
+  const windowPort = createWindowPortAdapter(windowManager, configService);
 
   const controller = new AppController({
-    resolvePaths,
-    loadConfig: (resolved) => loadConfig({ paths: resolved }),
+    configService,
     capabilities,
     window: windowPort,
     tray: createElectronTrayPort(() => trayIcon),
@@ -653,9 +626,7 @@ async function bootstrap(): Promise<void> {
   // 配置界面 IPC：启动流程解析出配置路径后，才注册六个白名单通道（Task 8 + 规格 §5.4 图标选择）。
   registerConfigIpc({
     host: ipcMain,
-    paths: () => activeController?.configPaths,
-    loadConfig: (resolved) => loadConfig({ paths: resolved }),
-    saveConfig: (config, options) => saveConfig(config, options),
+    service: configService,
     logger,
     onSaved: async (config, previous) => {
       // 规格 §9：开机自启变化立即同步登录项；只有用户显式改过才写。

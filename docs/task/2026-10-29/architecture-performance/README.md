@@ -12,12 +12,12 @@
 
 | 编号 | 状态 | 负责人 | 依赖 | 任务 | 评审项 | 需规格变更 |
 |---:|---|---|---|---|---|---|
-| 14 | 已阻塞 | Codex | 无 | [忽略 ERR_ABORTED 误触离线页](14-ignore-err-aborted.md) | R2（P0） | 否（缺陷修复） |
+| 14 | 已完成 | Codex | 无 | [忽略 ERR_ABORTED 误触离线页](14-ignore-err-aborted.md) | R2（P0） | 否（缺陷修复） |
 | 15 | 待开始 | 待指派 | 14 | [渲染进程崩溃与无响应恢复](15-renderer-crash-recovery.md) | R1（P0） | 是（§7/§12 补充，轻量） |
-| 16 | 待开始 | 待指派 | 无 | [首屏无白闪与产物压缩](16-ready-to-show-and-minify.md) | P2、P4 | 否 |
+| 16 | 已完成 | 待指派 | 无 | [首屏无白闪与产物压缩](16-ready-to-show-and-minify.md) | P2、P4 | 否 |
 | 17 | 已阻塞 | 待指派 | 16 | [远程/本地会话分区与 SessionPolicy](17-session-partition.md) | A1（P0） | 是（§11，登录态迁移） |
-| 18 | 待开始 | 待指派 | 无 | [shared 契约与依赖方向门禁](18-shared-contract-dependency-rules.md) | A4 | 否（需同步 `rules/architecture.md`） |
-| 19 | 待开始 | 待指派 | 18 | [ConfigService 单一权威配置](19-config-service.md) | A3 | 否 |
+| 18 | 已完成 | Antigravity | 无 | [shared 契约与依赖方向门禁](18-shared-contract-dependency-rules.md) | A4 | 否（需同步 `rules/architecture.md`） |
+| 19 | 已完成 | Antigravity | 18 | [ConfigService 单一权威配置](19-config-service.md) | A3 | 否 |
 | 20 | 待开始 | 待指派 | 14、15、19 | [启动关键路径优化](20-startup-critical-path.md) | P1 | 否 |
 | 21 | 待开始 | 待指派 | 15、17、20 | [拆分 main.ts 平台适配器](21-split-main-composition-root.md) | A2 | 否 |
 | 22 | 已阻塞 | 待指派 | 19、21 | [配置保存热更新分级](22-config-hot-apply.md) | A5 | 是（§5.2/§14.1） |

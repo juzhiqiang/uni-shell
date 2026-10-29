@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createDefaultConfig } from '../../src/main/config/config-schema';
 import type { ConfigLoadResult } from '../../src/main/config/config-store';
+import { createConfigService, type ConfigService } from '../../src/main/config/config-service';
+import type { ConfigFileSystem } from '../../src/main/config/config-store';
 import {
   AppController,
   createDefaultDelayPort,
@@ -162,14 +164,63 @@ function loadedResult(config = createDefaultConfig('https://example.com')): Conf
   return { status: 'loaded', path: PATHS.configPath, source: 'cli', config };
 }
 
-function createDeps(overrides: Partial<AppControllerDeps> = {}) {
+function createFakeConfigService(result: ConfigLoadResult = loadedResult(), paths: ResolvedConfigPaths = PATHS): ConfigService {
+  let currentResult = result;
+  let currentConfig = result.status === 'loaded' ? result.config : undefined;
+  return {
+    paths,
+    load: vi.fn(async () => currentResult),
+    reload: vi.fn(async () => currentResult),
+    current: () => currentConfig,
+    save: vi.fn(async (next) => {
+      currentConfig = next;
+      currentResult = { status: 'loaded', path: paths.configPath, source: paths.source, config: next };
+    }),
+    onChange: () => () => {},
+  };
+}
+
+interface CreateDepsOverrides extends Partial<AppControllerDeps> {
+  loadConfig?: () => Promise<ConfigLoadResult>;
+}
+
+function createDeps(overrides: CreateDepsOverrides = {}) {
   const fakeWindow = createFakeWindow();
   const fakeDelay = createFakeDelay();
   const logs: Array<{ level: string; event: string; data?: unknown }> = [];
 
+  let configService = overrides.configService;
+  if (!configService) {
+    if (overrides.loadConfig) {
+      const loadFn = overrides.loadConfig;
+      let loadedConfig: AppConfig | undefined;
+      const fake = {
+        paths: PATHS,
+        load: vi.fn(async () => {
+          const res = await loadFn();
+          loadedConfig = res.status === 'loaded' ? res.config : undefined;
+          return res;
+        }),
+        reload: vi.fn(async () => {
+          const res = await loadFn();
+          loadedConfig = res.status === 'loaded' ? res.config : undefined;
+          return res;
+        }),
+        current: () => loadedConfig,
+        save: vi.fn(async () => {}),
+        onChange: () => () => {},
+      };
+      configService = fake;
+    } else {
+      configService = createFakeConfigService();
+    }
+  }
+
+  const cleanOverrides = { ...overrides };
+  delete cleanOverrides.loadConfig;
+
   const deps: AppControllerDeps = {
-    resolvePaths: () => PATHS,
-    loadConfig: async () => loadedResult(),
+    configService,
     capabilities: CAPABILITIES,
     window: fakeWindow.window,
     delay: fakeDelay.delay,
@@ -180,7 +231,7 @@ function createDeps(overrides: Partial<AppControllerDeps> = {}) {
       debug: (event, data) => logs.push({ level: 'debug', event, data }),
       close: async () => {},
     },
-    ...overrides,
+    ...cleanOverrides,
   };
 
   return { deps, fakeWindow, fakeDelay, logs };
@@ -194,6 +245,36 @@ describe('AppController 启动', () => {
     await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
 
     expect(fakeWindow.calls).toContain('createMainWindow');
+    expect(controller.state).toBe('running');
+  });
+
+  it('启动流程复用 ConfigService，启动只读一次 config.json', async () => {
+    let readCount = 0;
+    const config = createDefaultConfig('https://example.com');
+    const memoryFs: ConfigFileSystem = {
+      readFile: vi.fn(async () => {
+        readCount += 1;
+        return JSON.stringify(config);
+      }),
+      writeFile: vi.fn(async () => {}),
+      rename: vi.fn(async () => {}),
+      mkdir: vi.fn(async () => {}),
+      access: vi.fn(async () => {}),
+      unlink: vi.fn(async () => {}),
+    };
+    const service = createConfigService({ paths: PATHS, fs: memoryFs });
+
+    // 模拟 main.ts bootstrap 行为：bootstrap 预加载一次
+    await service.load();
+    expect(readCount).toBe(1);
+
+    // 控制器 start 复用同一 service
+    const { deps } = createDeps({ configService: service });
+    const controller = new AppController(deps);
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+    // 仍保持 1 次读盘
+    expect(readCount).toBe(1);
     expect(controller.state).toBe('running');
   });
 

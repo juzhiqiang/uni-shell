@@ -80,3 +80,4 @@ export interface ConfigBridge {
   testConnection(url: string, network: NetworkConfig): Promise<ConnectionResult>;
   pickIcon(): Promise<IconPickResult>;
 }
+

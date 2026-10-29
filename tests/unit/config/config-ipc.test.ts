@@ -7,7 +7,8 @@ import {
   type ConfigIpcDeps,
   type ConfigIpcHost,
 } from '../../../src/main/config/config-ipc';
-import { loadConfig, saveConfig, type ConfigFileSystem } from '../../../src/main/config/config-store';
+import { createConfigService, type ConfigService } from '../../../src/main/config/config-service';
+import type { ConfigFileSystem } from '../../../src/main/config/config-store';
 import type { AppConfig, NetworkConfig } from '../../../src/main/config/config-types';
 import type { ResolvedConfigPaths } from '../../../src/main/platform/config-paths';
 import { CONFIG_IPC_CHANNELS } from '../../../src/shared/ipc-contract';
@@ -123,19 +124,29 @@ interface Harness {
   };
 }
 
-function createHarness(options: { initial?: Record<string, string>; overrides?: Partial<ConfigIpcDeps> } = {}): Harness {
+function createHarness(options: {
+  initial?: Record<string, string>;
+  service?: ConfigService;
+  overrides?: Partial<ConfigIpcDeps> & { fs?: ConfigFileSystem };
+} = {}): Harness {
   const { host, handlers } = createHost();
   const memory = createMemoryFs(options.initial);
+  const effectiveFs = options.overrides?.fs ?? memory.fs;
   const calls: string[] = [];
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), close: vi.fn(async () => {}) };
 
+  const service =
+    options.service ??
+    options.overrides?.service ??
+    createConfigService({
+      paths: PATHS,
+      fs: effectiveFs,
+      now: () => FIXED_NOW,
+    });
+
   const deps: ConfigIpcDeps = {
     host,
-    paths: () => PATHS,
-    loadConfig: (paths) => loadConfig({ paths, fs: memory.fs, now: () => FIXED_NOW }),
-    saveConfig: (config, saveOptions) => saveConfig(config, saveOptions),
-    fs: memory.fs,
-    now: () => FIXED_NOW,
+    service,
     logger,
     onSaved: () => {
       calls.push('onSaved');
