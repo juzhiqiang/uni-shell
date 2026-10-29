@@ -408,27 +408,6 @@ describe('installNavigationGuards', () => {
     expect(window.webContents.emitWindowOpen({ url: 'https://app.example.com/popup' }).action).toBe('deny');
   });
 
-  it('默认拒绝下载，允许时按授权源放行', () => {
-    const denied = createWindow();
-    installNavigationGuards(denied as never, security());
-
-    // emitDownload 返回下载是否被取消（preventDefault 被调用）。
-    expect(denied.webContents.session.emitDownload({ getURL: () => 'https://app.example.com/a.pdf' })).toBe(true);
-
-    const allowed = createWindow();
-    installNavigationGuards(allowed as never, security({ allowDownloads: true }));
-    expect(allowed.webContents.session.emitDownload({ getURL: () => 'https://app.example.com/a.pdf' })).toBe(false);
-    expect(allowed.webContents.session.emitDownload({ getURL: () => 'https://evil.example.com/a.pdf' })).toBe(true);
-  });
-
-  it('权限请求一律被拒绝', () => {
-    const window = createWindow();
-    installNavigationGuards(window as never, security());
-
-    expect(window.webContents.session.requestPermission('media')).toBe(false);
-    expect(window.webContents.session.requestPermission('notifications')).toBe(false);
-  });
-
   it('update 用新安全配置替换策略', () => {
     const window = createWindow();
     const guards = installNavigationGuards(window as never, security());
@@ -447,13 +426,11 @@ describe('installNavigationGuards', () => {
 
     expect(window.webContents.events.listenerCount('will-navigate')).toBe(1);
     expect(window.webContents.events.listenerCount('will-redirect')).toBe(1);
-    expect(window.webContents.session.events.listenerCount('will-download')).toBe(1);
 
     guards.dispose();
 
     expect(window.webContents.events.listenerCount('will-navigate')).toBe(0);
     expect(window.webContents.events.listenerCount('will-redirect')).toBe(0);
-    expect(window.webContents.session.events.listenerCount('will-download')).toBe(0);
     // 失败关闭：卸载后仍然拒绝新窗口。
     expect(window.webContents.emitWindowOpen({ url: 'https://app.example.com/popup' })).toEqual({ action: 'deny' });
   });

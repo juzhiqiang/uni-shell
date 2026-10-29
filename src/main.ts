@@ -53,6 +53,7 @@ import {
   WindowManager,
   type BrowserWindowConstructorOptions,
 } from './main/window/window-manager';
+import { REMOTE_PARTITION } from './main/window/session-policy';
 
 /**
  * Electron 主进程入口。
@@ -414,9 +415,11 @@ function createBrowserWindowFactory(getWindowIcon: () => Electron.NativeImage | 
 }
 
 /**
- * 主窗口加载诊断（规格 §12 的页面加载结果、§14.1 的断网恢复）：
+ * 主窗口加载诊断（规格 §12 的页面加载结果、§14.1 的断网恢复、§7 的进程级恢复）：
  * - `did-fail-load` 进入控制器的失败分类与重试控制；
- * - `did-navigate` 在主框架导航成功时触发且带 URL，本地离线页（file://）不算恢复。
+ * - `did-navigate` 在主框架导航成功时触发且带 URL，本地离线页（file://）不算恢复；
+ * - `render-process-gone` / `unresponsive` / `responsive` 交给控制器的崩溃窗口：
+ *   崩溃不产生 `did-fail-load`，重试控制器不会被触发，必须由进程级事件驱动恢复。
  */
 function attachMainWindowDiagnostics(window: BrowserWindow): void {
   window.webContents.on(
@@ -428,6 +431,15 @@ function attachMainWindowDiagnostics(window: BrowserWindow): void {
   window.webContents.on('did-navigate', (_event, url) => {
     if (url.startsWith('file:')) return;
     activeController?.reportLoadSuccess();
+  });
+  window.webContents.on('render-process-gone', (_event, details) => {
+    activeController?.reportRendererGone({ reason: details.reason, exitCode: details.exitCode });
+  });
+  window.webContents.on('unresponsive', () => {
+    activeController?.reportUnresponsive();
+  });
+  window.webContents.on('responsive', () => {
+    activeController?.reportResponsive();
   });
 }
 
@@ -487,6 +499,12 @@ function createWindowPortAdapter(
       if (main !== null) await loadOfflinePage(main);
     },
 
+    forcefullyCrashRenderer() {
+      // 规格 §7：无响应渲染进程由控制器判定后强制结束；随后 render-process-gone
+      // 会接手，按崩溃窗口决定自动重载或离线页降级。窗口不存在时无需处理。
+      windowManager.getMainWindow()?.webContents.forcefullyCrashRenderer();
+    },
+
     isMainWindowVisible: () => windowManager.getMainWindow()?.isVisible() ?? false,
     isConfigWindowOpen: () => windowManager.getConfigWindow() !== null,
     focusConfigWindow() {
@@ -500,10 +518,10 @@ function createWindowPortAdapter(
   };
 }
 
-/** 代理端口：目标页面加载前经默认 session 应用代理（规格 §7）。 */
+/** 代理端口：目标页面加载前经远程 session 应用代理（规格 §7、§11）。 */
 function createElectronProxyPort(): ProxyPort {
   return {
-    apply: (config: NetworkConfig) => applyProxy(session.defaultSession, config),
+    apply: (config: NetworkConfig) => applyProxy(session.fromPartition(REMOTE_PARTITION), config),
   };
 }
 
@@ -663,6 +681,22 @@ async function bootstrap(): Promise<void> {
     // 规格 §8：close-to-hide 会阻止退出；关闭流程开始后放行。
     windowManager.beginShutdown();
     void controller.shutdown();
+  });
+
+  // 规格 §12：子进程（GPU、网络服务等）异常退出只记录诊断，不参与页面恢复；
+  // 渲染进程由 webContents 的 render-process-gone 处理，不在这里重复计数。
+  app.on('child-process-gone', (_event, details) => {
+    const payload = {
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      serviceName: details.serviceName,
+    };
+    if (details.reason === 'clean-exit') {
+      logger.info('child-process-gone', payload);
+    } else {
+      logger.warn('child-process-gone', payload);
+    }
   });
 }
 

@@ -33,6 +33,12 @@ import {
   type NavigationGuardHandle,
   type NavigationGuardRecord,
 } from './navigation-guard';
+import {
+  installSessionPolicy,
+  LOCAL_CONFIG_PARTITION,
+  REMOTE_PARTITION,
+  type SessionPolicyHandle,
+} from './session-policy';
 
 const MAIN_WINDOW_WIDTH = 1280;
 const MAIN_WINDOW_HEIGHT = 800;
@@ -344,6 +350,8 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
   private configWindow: T | null = null;
   private readonly guards = new Map<T, NavigationGuardHandle>();
   private readonly reveals = new Map<T, InitialReveal<T>>();
+  private remoteSessionPolicy: SessionPolicyHandle | null = null;
+  private configSessionPolicy: SessionPolicyHandle | null = null;
   private security: SecurityConfig = createLocalConfigSecurityPolicy();
   private windowPolicy: { window: WindowConfig; capabilities: PlatformCapabilities } | null = null;
   private targetUrl: string | undefined;
@@ -394,11 +402,15 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
       backgroundColor: WINDOW_BACKGROUND_COLOR,
       autoHideMenuBar: true,
       title: 'UniShell',
-      webPreferences: secureRemoteWebPreferences(),
+      webPreferences: {
+        ...secureRemoteWebPreferences(),
+        partition: REMOTE_PARTITION,
+      },
     });
     this.mainWindow = window;
 
     this.installGuards(window, effectiveSecurity, 'main', config.window.mode === 'kiosk');
+    this.attachSessionPolicy(window, effectiveSecurity, 'main', config.window.mode === 'kiosk');
     this.attachInitialReveal(window, resolveInitialVisibility(config.startup.initialState));
     this.applyWindowPolicy(config.window, this.deps.capabilities);
     this.registerMainWindowLifecycle(window);
@@ -437,11 +449,13 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
       webPreferences: {
         ...secureRemoteWebPreferences(),
         preload: this.deps.preloadPath,
+        partition: LOCAL_CONFIG_PARTITION,
       },
     });
     this.configWindow = window;
 
     this.installGuards(window, createLocalConfigSecurityPolicy(), 'config', false);
+    this.attachSessionPolicy(window, createLocalConfigSecurityPolicy(), 'config', false);
     // 配置窗口是用户显式打开的入口（含配置不可用时的首次启动），就绪即显示。
     this.attachInitialReveal(window, 'show');
     window.on('closed', () => {
@@ -520,6 +534,7 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     const main = this.getMainWindow();
     const guards = main === null ? undefined : this.guards.get(main);
     guards?.update(effectiveSecurity);
+    this.remoteSessionPolicy?.update(effectiveSecurity);
   }
 
   /** 退出流程开始：之后的窗口关闭不再被 close-to-hide 拦截。 */
@@ -534,6 +549,10 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     if (config !== null && !config.isDestroyed()) config.close();
     const main = this.mainWindow;
     if (main !== null && !main.isDestroyed()) main.close();
+    this.remoteSessionPolicy?.dispose();
+    this.remoteSessionPolicy = null;
+    this.configSessionPolicy?.dispose();
+    this.configSessionPolicy = null;
   }
 
   private applyMode(window: T, config: WindowConfig, capabilities: PlatformCapabilities): WindowMode {
@@ -696,6 +715,54 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     this.guards.set(window, guards);
   }
 
+  private attachSessionPolicy(
+    window: T,
+    security: SecurityConfig,
+    owner: 'main' | 'config',
+    kiosk: boolean,
+  ): void {
+    const session = window.webContents.session;
+    if (!session) return;
+
+    if (owner === 'main') {
+      if (this.remoteSessionPolicy) {
+        this.remoteSessionPolicy.update(security);
+      } else {
+        this.remoteSessionPolicy = installSessionPolicy(session, security, {
+          kiosk,
+          onDecision: (record) => {
+            this.emit({
+              type: 'navigation-guard',
+              window: 'main',
+              kind: record.kind,
+              url: record.url,
+              action: record.action,
+              reason: record.reason,
+            });
+          },
+        });
+      }
+    } else {
+      if (this.configSessionPolicy) {
+        this.configSessionPolicy.update(security);
+      } else {
+        this.configSessionPolicy = installSessionPolicy(session, security, {
+          kiosk,
+          onDecision: (record) => {
+            this.emit({
+              type: 'navigation-guard',
+              window: 'config',
+              kind: record.kind,
+              url: record.url,
+              action: record.action,
+              reason: record.reason,
+            });
+          },
+        });
+      }
+    }
+  }
+
   private releaseWindow(window: T): void {
     try {
       this.guards.get(window)?.dispose();
@@ -705,7 +772,11 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     this.guards.delete(window);
     this.reveals.delete(window);
     if (this.mainWindow === window) this.mainWindow = null;
-    if (this.configWindow === window) this.configWindow = null;
+    if (this.configWindow === window) {
+      this.configWindow = null;
+      this.configSessionPolicy?.dispose();
+      this.configSessionPolicy = null;
+    }
   }
 
   /**

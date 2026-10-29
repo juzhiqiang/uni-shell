@@ -100,7 +100,7 @@ export interface GuardWebContents {
     listener: (details: GuardNavigationDetails) => void,
   ): unknown;
   setWindowOpenHandler(handler: (details: GuardWindowOpenDetails) => GuardWindowOpenResponse): void;
-  session: GuardSession;
+  session?: GuardSession;
 }
 
 /** 被保护窗口的最小读取面；真实 `BrowserWindow` 结构上满足该接口。 */
@@ -350,31 +350,12 @@ export function installNavigationGuards(
     return { action: 'deny' };
   };
 
-  const onWillDownload = (event: GuardEvent, item: GuardDownloadItem): void => {
-    const url = readDownloadUrl(item);
-    const decision = decideDownload(url, holder.security, { kiosk });
-    record('download', url, decision);
-    if (decision.action !== 'allow') event.preventDefault();
-  };
-
-  const onPermissionRequest = (
-    _contents: unknown,
-    permission: string,
-    callback: (granted: boolean) => void,
-  ): void => {
-    const decision = decidePermission(permission);
-    record('permission', permission, decision);
-    callback(false);
-  };
-
   /** 卸载后的失败关闭策略：一律拒绝新窗口。 */
   const denyAllWindowOpen = (): GuardWindowOpenResponse => ({ action: 'deny' });
 
   webContents.on('will-navigate', onNavigate);
   webContents.on('will-redirect', onRedirect);
   webContents.setWindowOpenHandler(onWindowOpen);
-  webContents.session.on('will-download', onWillDownload);
-  webContents.session.setPermissionRequestHandler(onPermissionRequest);
 
   return {
     update(next: SecurityConfig): void {
@@ -387,7 +368,6 @@ export function installNavigationGuards(
       try {
         webContents.off('will-navigate', onNavigate);
         webContents.off('will-redirect', onRedirect);
-        webContents.session.off('will-download', onWillDownload);
         webContents.setWindowOpenHandler(denyAllWindowOpen);
       } catch {
         // 窗口已销毁时静默安全退出，避免 Object has been destroyed

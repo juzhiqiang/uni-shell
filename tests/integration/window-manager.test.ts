@@ -116,6 +116,7 @@ class FakeSession implements GuardSession {
   readonly events = new Map<string, Array<(...args: unknown[]) => void>>();
   permissionHandler: ((contents: unknown, permission: string, callback: (granted: boolean) => void) => void) | null =
     null;
+  permissionHandlerRegisterCount = 0;
 
   on(event: 'will-download', listener: (...args: unknown[]) => void): unknown {
     const list = this.events.get(event) ?? [];
@@ -136,7 +137,19 @@ class FakeSession implements GuardSession {
   setPermissionRequestHandler(
     handler: ((contents: unknown, permission: string, callback: (granted: boolean) => void) => void) | null,
   ): void {
+    if (handler !== null) {
+      this.permissionHandlerRegisterCount++;
+    }
     this.permissionHandler = handler;
+  }
+
+  emitDownload(item: { getURL?: () => string; url?: string }): boolean {
+    const event = new FakeEvent();
+    const listeners = [...(this.events.get('will-download') ?? [])];
+    for (const listener of listeners) {
+      listener(event, item);
+    }
+    return event.prevented;
   }
 
   requestPermission(permission: string): boolean | undefined {
@@ -189,7 +202,7 @@ class FakeWebContents implements GuardWebContents {
 
 class FakeWindow implements BrowserWindowLike {
   readonly calls: string[] = [];
-  readonly webContents = new FakeWebContents();
+  readonly webContents: FakeWebContents;
   readonly closeListeners: Array<(event?: { preventDefault(): void }) => void> = [];
   readonly closedListeners: Array<() => void> = [];
   readonly readyToShowListeners: Array<() => void> = [];
@@ -204,6 +217,10 @@ class FakeWindow implements BrowserWindowLike {
   kiosk = false;
   alwaysOnTop: { flag: boolean; level?: string } = { flag: false };
   loadFailure: Error | null = null;
+
+  constructor(session = new FakeSession()) {
+    this.webContents = new FakeWebContents(session);
+  }
 
   async loadURL(url: string): Promise<void> {
     this.calls.push(`loadURL:${url}`);
@@ -341,6 +358,7 @@ interface ManagerHarness {
   events: WindowManagerEvent[];
   quitApp: ReturnType<typeof vi.fn>;
   openExternal: ReturnType<typeof vi.fn>;
+  getSession(partition?: string): FakeSession;
   /** 最近一次创建的主窗口。 */
   mainWindow(): FakeWindow;
   configWindow(): FakeWindow;
@@ -357,13 +375,25 @@ function createManager(
   const created: FakeWindow[] = [];
   const optionsLog: BrowserWindowConstructorOptions[] = [];
   const events: WindowManagerEvent[] = [];
+  const sessions = new Map<string, FakeSession>();
   const quitApp = vi.fn();
   const openExternal = vi.fn();
+
+  const getSession = (partition?: string): FakeSession => {
+    const key = partition ?? 'default';
+    let s = sessions.get(key);
+    if (!s) {
+      s = new FakeSession();
+      sessions.set(key, s);
+    }
+    return s;
+  };
 
   const manager = new WindowManager<FakeWindow>({
     createWindow: (windowOptions) => {
       optionsLog.push(windowOptions);
-      const window = new FakeWindow();
+      const partition = windowOptions.webPreferences?.partition as string | undefined;
+      const window = new FakeWindow(getSession(partition));
       created.push(window);
       return window;
     },
@@ -383,6 +413,7 @@ function createManager(
     created,
     optionsLog,
     events,
+    getSession,
     quitApp,
     openExternal,
     mainWindow: () => {
@@ -1099,5 +1130,84 @@ describe('纯辅助函数', () => {
     await loader(window);
 
     expect(window.loadFileCalls).toEqual(['/app/dist/renderer/config/index.html']);
+  });
+});
+
+describe('会话分区与 SessionPolicy 隔离', () => {
+  it('主窗口使用 persist:remote，配置窗口使用 local-config 内存分区', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(appConfig());
+    harness.manager.openConfigWindow();
+
+    expect(harness.optionsLog[0].webPreferences?.partition).toBe('persist:remote');
+    expect(harness.optionsLog[1].webPreferences?.partition).toBe('local-config');
+  });
+
+  it('配置窗口打开不影响主窗口的下载策略，且配置窗口默认拒绝下载', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(
+      appConfig({
+        security: {
+          allowedOrigins: ['https://app.example.com'],
+          allowExternalLinks: false,
+          allowPopups: false,
+          allowDownloads: true,
+        },
+      }),
+    );
+
+    const remoteSession = harness.getSession('persist:remote');
+    const localSession = harness.getSession('local-config');
+
+    // 主窗口允许下载
+    expect(remoteSession.emitDownload({ getURL: () => 'https://app.example.com/report.pdf' })).toBe(false);
+
+    // 打开配置窗口
+    harness.manager.openConfigWindow();
+
+    // 配置窗口拒绝下载
+    expect(localSession.emitDownload({ getURL: () => 'https://app.example.com/report.pdf' })).toBe(true);
+
+    // 主窗口的下载策略依然放行，不受配置窗口干扰
+    expect(remoteSession.emitDownload({ getURL: () => 'https://app.example.com/report.pdf' })).toBe(false);
+  });
+
+  it('同一 session 分区只安装一次策略，配置窗口重新打开不会重复注册', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(appConfig());
+    const remoteSession = harness.getSession('persist:remote');
+
+    expect(remoteSession.permissionHandlerRegisterCount).toBe(1);
+
+    // 重新触发窗口策略或更新
+    harness.manager.updateSecurity({
+      allowedOrigins: [],
+      allowExternalLinks: false,
+      allowPopups: false,
+      allowDownloads: false,
+    });
+    expect(remoteSession.permissionHandlerRegisterCount).toBe(1);
+  });
+
+  it('配置窗口关闭后释放自身策略，不破坏主窗口策略', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(
+      appConfig({
+        security: {
+          allowedOrigins: ['https://app.example.com'],
+          allowExternalLinks: false,
+          allowPopups: false,
+          allowDownloads: true,
+        },
+      }),
+    );
+
+    const config = harness.manager.openConfigWindow();
+    const remoteSession = harness.getSession('persist:remote');
+
+    config.close();
+
+    // 配置窗口关闭后，主窗口下载依然生效
+    expect(remoteSession.emitDownload({ getURL: () => 'https://app.example.com/report.pdf' })).toBe(false);
   });
 });

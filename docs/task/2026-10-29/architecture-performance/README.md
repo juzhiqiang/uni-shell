@@ -15,7 +15,7 @@
 | 14 | 已完成 | Codex | 无 | [忽略 ERR_ABORTED 误触离线页](14-ignore-err-aborted.md) | R2（P0） | 否（缺陷修复） |
 | 15 | 待开始 | 待指派 | 14 | [渲染进程崩溃与无响应恢复](15-renderer-crash-recovery.md) | R1（P0） | 是（§7/§12 补充，轻量） |
 | 16 | 已完成 | 待指派 | 无 | [首屏无白闪与产物压缩](16-ready-to-show-and-minify.md) | P2、P4 | 否 |
-| 17 | 已阻塞 | 待指派 | 16 | [远程/本地会话分区与 SessionPolicy](17-session-partition.md) | A1（P0） | 是（§11，登录态迁移） |
+| 17 | 已完成 | Antigravity | 16 | [远程/本地会话分区与 SessionPolicy](17-session-partition.md) | A1（P0） | 是（已确认方案 A，§11/§14.1 已更新） |
 | 18 | 已完成 | Antigravity | 无 | [shared 契约与依赖方向门禁](18-shared-contract-dependency-rules.md) | A4 | 否（需同步 `rules/architecture.md`） |
 | 19 | 已完成 | Antigravity | 18 | [ConfigService 单一权威配置](19-config-service.md) | A3 | 否 |
 | 20 | 待开始 | 待指派 | 14、15、19 | [启动关键路径优化](20-startup-critical-path.md) | P1 | 否 |
