@@ -457,6 +457,21 @@ describe('installNavigationGuards', () => {
     expect(window.webContents.emitWindowOpen({ url: 'https://app.example.com/popup' })).toEqual({ action: 'deny' });
   });
 
+  it('当 webContents 已销毁时 dispose 不会抛出 Object has been destroyed', () => {
+    const window = createWindow();
+    const guards = installNavigationGuards(window as never, security());
+
+    // 模拟 Electron 窗口销毁状态
+    let destroyed = false;
+    (window.webContents as { isDestroyed?: () => boolean }).isDestroyed = () => destroyed;
+    window.webContents.setWindowOpenHandler = () => {
+      if (destroyed) throw new Error('Object has been destroyed');
+    };
+
+    destroyed = true;
+    expect(() => guards.dispose()).not.toThrow();
+  });
+
   it('未注入 openExternal 时外链决策不会抛出', () => {
     const window = createWindow();
     installNavigationGuards(window as never, security({ allowExternalLinks: true }));

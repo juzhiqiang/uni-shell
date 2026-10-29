@@ -559,7 +559,11 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
   }
 
   private releaseWindow(window: T): void {
-    this.guards.get(window)?.dispose();
+    try {
+      this.guards.get(window)?.dispose();
+    } catch {
+      // 避免窗口在 closed 事件中触发销毁异常
+    }
     this.guards.delete(window);
     if (this.mainWindow === window) this.mainWindow = null;
     if (this.configWindow === window) this.configWindow = null;

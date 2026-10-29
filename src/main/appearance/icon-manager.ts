@@ -11,7 +11,12 @@
  * - 配置只记录裸文件名，路径解析拒绝穿越，杜绝把任意文件当图标加载。
  */
 
-import { join } from 'node:path';
+import { posix, win32 } from 'node:path';
+
+function joinPath(directory: string, fileName: string): string {
+  const pathApi = directory.startsWith('/') ? posix : win32;
+  return pathApi.join(directory, fileName);
+}
 
 import { isIconFileName } from '../config/config-schema';
 import { DEFAULT_ICON_DATA_URL_256, DEFAULT_ICON_DATA_URL_32 } from './default-icon';
@@ -124,7 +129,7 @@ export function iconFileNameForExtension(extension: string): string {
 /** 解析配置目录中的图标路径；文件名不合法（穿越、错误扩展名等）时返回 null。 */
 export function resolveIconPath(configDirectory: string, fileName: string): string | null {
   if (!isIconFileName(fileName)) return null;
-  return join(configDirectory, fileName);
+  return joinPath(configDirectory, fileName);
 }
 
 /**
@@ -239,7 +244,7 @@ export async function installPickedIcon(deps: InstallPickedIconDeps): Promise<Ic
   }
 
   const fileName = iconFileNameForExtension(extension);
-  const target = join(deps.configDirectory, fileName);
+  const target = joinPath(deps.configDirectory, fileName);
 
   try {
     await fs.writeFile(target, bytes);
@@ -283,7 +288,7 @@ export async function removeUnreferencedIconFiles(
     if (!isManagedIconFileName(entry)) continue;
     if (entry === deps.configuredIcon) continue;
     try {
-      await deps.fs.unlink(join(deps.configDirectory, entry));
+      await deps.fs.unlink(joinPath(deps.configDirectory, entry));
       removed.push(entry);
     } catch {
       // 单个文件清理失败继续处理其余文件。

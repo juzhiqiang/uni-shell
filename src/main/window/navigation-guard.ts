@@ -90,6 +90,7 @@ export interface GuardSession {
 
 /** `webContents` 的最小读取面。 */
 export interface GuardWebContents {
+  isDestroyed?: () => boolean;
   on(
     event: 'will-navigate' | 'will-redirect',
     listener: (details: GuardNavigationDetails) => void,
@@ -359,10 +360,17 @@ export function installNavigationGuards(
       holder.security = next;
     },
     dispose(): void {
-      webContents.off('will-navigate', onNavigate);
-      webContents.off('will-redirect', onRedirect);
-      webContents.session.off('will-download', onWillDownload);
-      webContents.setWindowOpenHandler(denyAllWindowOpen);
+      if (typeof webContents.isDestroyed === 'function' && webContents.isDestroyed()) {
+        return;
+      }
+      try {
+        webContents.off('will-navigate', onNavigate);
+        webContents.off('will-redirect', onRedirect);
+        webContents.session.off('will-download', onWillDownload);
+        webContents.setWindowOpenHandler(denyAllWindowOpen);
+      } catch {
+        // 窗口已销毁时静默安全退出，避免 Object has been destroyed
+      }
     },
   };
 }
