@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createDefaultConfig } from '../../src/main/config/config-schema';
@@ -841,7 +840,7 @@ describe('纯辅助函数', () => {
 
     await loader(window);
 
-    expect(window.loadFileCalls).toEqual([join('/app', 'dist/renderer/config/index.html')]);
+    expect(window.loadFileCalls).toEqual(['/app/dist/renderer/config/index.html']);
     expect(window.loadURLCalls).toEqual([]);
   });
 
@@ -852,6 +851,22 @@ describe('纯辅助函数', () => {
     await loader(window);
 
     expect(window.loadURLCalls).toEqual([]);
-    expect(window.loadFileCalls).toEqual([join('/app', 'dist/renderer/config/index.html')]);
+    expect(window.loadFileCalls).toEqual(['/app/dist/renderer/config/index.html']);
+  });
+
+  it('createConfigWindowLoader 在开发地址不可达时回退到打包后的本地页面', async () => {
+    const window = new FakeWindow();
+    window.loadURL = async () => {
+      throw new Error('ERR_CONNECTION_REFUSED');
+    };
+    const loader = createConfigWindowLoader({
+      appPath: '/app',
+      devUrl: 'http://localhost:5173',
+      rendererEntry: 'dist/renderer/config/index.html',
+    });
+
+    await loader(window);
+
+    expect(window.loadFileCalls).toEqual(['/app/dist/renderer/config/index.html']);
   });
 });

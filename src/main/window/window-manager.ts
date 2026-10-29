@@ -14,7 +14,7 @@
  *   `BrowserWindowLike`（文件末尾有编译期断言）。
  */
 
-import { join } from 'node:path';
+import { posix, win32 } from 'node:path';
 
 import type { BrowserWindow } from 'electron';
 
@@ -216,10 +216,15 @@ export function createConfigWindowLoader(options: {
   return async (window) => {
     const devUrl = options.devUrl;
     if (devUrl !== undefined && isLocalDevelopmentUrl(devUrl)) {
-      await window.loadURL(devUrl);
-      return;
+      try {
+        await window.loadURL(devUrl);
+        return;
+      } catch {
+        // 开发服务器加载失败时回退到打包后的本地页面
+      }
     }
-    await window.loadFile(join(options.appPath, entry));
+    const pathApi = options.appPath.startsWith('/') ? posix : win32;
+    await window.loadFile(pathApi.join(options.appPath, entry));
   };
 }
 

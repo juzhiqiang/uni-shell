@@ -125,10 +125,14 @@ function currentConfigPath(): string {
 async function loadConfigWindow(window: BrowserWindow): Promise<void> {
   const developmentUrl = process.env.ELECTRON_RENDERER_URL;
   if (developmentUrl && isLocalDevelopmentUrl(developmentUrl)) {
-    const url = new URL(developmentUrl);
-    url.searchParams.set('configPath', currentConfigPath());
-    await window.loadURL(url.toString());
-    return;
+    try {
+      const url = new URL(developmentUrl);
+      url.searchParams.set('configPath', currentConfigPath());
+      await window.loadURL(url.toString());
+      return;
+    } catch {
+      // 开发服务器不可达（如保存重启后 Vite 服务断开、或脱机调试）时回退到打包页面，避免白屏
+    }
   }
   await window.loadFile(join(app.getAppPath(), 'dist/renderer/config/index.html'), {
     query: { configPath: currentConfigPath() },
@@ -139,8 +143,12 @@ async function loadConfigWindow(window: BrowserWindow): Promise<void> {
 async function loadOfflinePage(window: BrowserWindow): Promise<void> {
   const developmentUrl = process.env.ELECTRON_RENDERER_URL;
   if (developmentUrl && isLocalDevelopmentUrl(developmentUrl)) {
-    await window.loadURL(new URL('offline.html', developmentUrl).toString());
-    return;
+    try {
+      await window.loadURL(new URL('offline.html', developmentUrl).toString());
+      return;
+    } catch {
+      // 回退到本地离线页
+    }
   }
   await window.loadFile(join(app.getAppPath(), OFFLINE_PAGE_ENTRY));
 }
