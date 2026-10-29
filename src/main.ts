@@ -486,9 +486,11 @@ function createWindowPortAdapter(windowManager: WindowManager<BrowserWindow>): W
     createMainWindow: createMain,
 
     async showAndFocusMain() {
-      // 窗口已被销毁（如关闭后再次唤醒）时按最近配置重建。
+      // 窗口已被销毁（如关闭后再次唤醒）时按最近配置重建；重建窗口可能按
+      // `startup.initialState` 隐藏创建，调用方已明确要展示，因此显式显示。
       if (!windowManager.showMainWindow() && lastConfig !== undefined) {
         await createMain(lastConfig);
+        windowManager.showMainWindow();
       }
     },
 
@@ -504,7 +506,10 @@ function createWindowPortAdapter(windowManager: WindowManager<BrowserWindow>): W
         await main.loadURL(lastConfig.targetUrl);
         return;
       }
-      if (lastConfig !== undefined) await createMain(lastConfig);
+      if (lastConfig !== undefined) {
+        await createMain(lastConfig);
+        windowManager.showMainWindow();
+      }
     },
 
     async showOfflinePage() {
@@ -515,11 +520,8 @@ function createWindowPortAdapter(windowManager: WindowManager<BrowserWindow>): W
     isMainWindowVisible: () => windowManager.getMainWindow()?.isVisible() ?? false,
     isConfigWindowOpen: () => windowManager.getConfigWindow() !== null,
     focusConfigWindow() {
-      const config = windowManager.getConfigWindow();
-      if (config !== null) {
-        config.show();
-        config.focus();
-      }
+      // 走窗口管理器：配置窗口首帧未就绪时挂起显示，避免占位底色空窗。
+      windowManager.focusConfigWindow();
     },
     /** 受控重启前关闭陈旧窗口；与 app.relaunch()/app.exit() 配合使用。 */
     closeStaleWindows() {

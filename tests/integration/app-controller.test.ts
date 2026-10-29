@@ -5,15 +5,15 @@ import type { ConfigLoadResult } from '../../src/main/config/config-store';
 import {
   AppController,
   createDefaultDelayPort,
-  shouldApplyDelay,
   type AppControllerDeps,
   type DelayPort,
-  type LaunchContext,
-  type TrayActions,
   type WindowPort,
 } from '../../src/main/app-controller';
+import { type LaunchContext } from '../../src/main/instance/single-instance';
 import { resolveConfigPaths, type ResolvedConfigPaths } from '../../src/main/platform/config-paths';
 import type { PlatformCapabilities } from '../../src/main/platform/platform-adapter';
+import { shouldApplyDelay } from '../../src/main/startup/startup-manager';
+import type { TrayActions } from '../../src/main/tray/tray-manager';
 
 /**
  * 覆盖规格 v2.1 §4 的启动状态机与唤醒行为：
@@ -374,6 +374,47 @@ describe('启动来源与延迟', () => {
 
     expect(fakeWindow.calls).toContain('hideMain');
     expect(controller.state).toBe('awaiting-delay');
+  });
+
+  it('initialState=tray 时延迟到期创建窗口后显式显示并聚焦', async () => {
+    const base = createDefaultConfig('https://example.com');
+    const config = { ...base, startup: { ...base.startup, initialState: 'tray' as const, delaySec: 30 } };
+    const { deps, fakeDelay, fakeWindow } = createDeps({ loadConfig: async () => loadedResult(config) });
+    const controller = new AppController(deps);
+
+    await controller.start({ argv: ['app', '--launched-at-login'], workingDirectory: '/work', env: {} });
+    await fakeDelay.fire();
+
+    // 窗口按初始驻留状态隐藏创建，控制器必须显式显示，否则托盘驻留时窗口不出现。
+    expect(fakeWindow.calls).toEqual(['hideMain', 'createMainWindow', 'showAndFocusMain']);
+    expect(fakeWindow.window.isMainWindowVisible()).toBe(true);
+  });
+
+  it('initialState=minimized 时延迟到期只创建窗口，不显式抢焦点', async () => {
+    const base = createDefaultConfig('https://example.com');
+    const config = { ...base, startup: { ...base.startup, initialState: 'minimized' as const, delaySec: 30 } };
+    const { deps, fakeDelay, fakeWindow } = createDeps({ loadConfig: async () => loadedResult(config) });
+    const controller = new AppController(deps);
+
+    await controller.start({ argv: ['app', '--launched-at-login'], workingDirectory: '/work', env: {} });
+    await fakeDelay.fire();
+
+    // 最小化由窗口层在 ready-to-show 时以 showInactive 呈现。
+    expect(fakeWindow.calls).toEqual(['createMainWindow']);
+  });
+
+  it('显式请求显示时即使 initialState=minimized 也创建并聚焦', async () => {
+    const base = createDefaultConfig('https://example.com');
+    const config = { ...base, startup: { ...base.startup, initialState: 'minimized' as const, delaySec: 30 } };
+    const { deps, fakeWindow } = createDeps({ loadConfig: async () => loadedResult(config) });
+    const controller = new AppController(deps);
+
+    await controller.start({ argv: ['app', '--launched-at-login'], workingDirectory: '/work', env: {} });
+    fakeWindow.calls.length = 0;
+    await controller.showAndFocusMain();
+
+    expect(fakeWindow.calls).toEqual(['createMainWindow', 'showAndFocusMain']);
+    expect(fakeWindow.window.isMainWindowVisible()).toBe(true);
   });
 
   it('登录上下文由控制器从 argv 推导', async () => {

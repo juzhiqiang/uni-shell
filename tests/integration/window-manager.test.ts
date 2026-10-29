@@ -192,6 +192,7 @@ class FakeWindow implements BrowserWindowLike {
   readonly webContents = new FakeWebContents();
   readonly closeListeners: Array<(event?: { preventDefault(): void }) => void> = [];
   readonly closedListeners: Array<() => void> = [];
+  readonly readyToShowListeners: Array<() => void> = [];
   readonly loadURLCalls: string[] = [];
   readonly loadFileCalls: string[] = [];
   bounds: Rectangle = { x: 0, y: 0, width: 1280, height: 800 };
@@ -219,6 +220,21 @@ class FakeWindow implements BrowserWindowLike {
     if (event === 'close') this.closeListeners.push(listener);
     else this.closedListeners.push(listener);
     return this;
+  }
+
+  once(event: 'ready-to-show', listener: () => void): unknown {
+    if (event === 'ready-to-show') this.readyToShowListeners.push(listener);
+    return this;
+  }
+
+  /** 模拟 Electron：首帧绘制完成后触发 ready-to-show。 */
+  emitReadyToShow(): void {
+    for (const listener of [...this.readyToShowListeners]) listener();
+  }
+
+  showInactive(): void {
+    this.calls.push('showInactive');
+    this.visible = true;
   }
 
   getBounds(): Rectangle {
@@ -455,6 +471,7 @@ describe('安全窗口创建', () => {
   it('重复创建主窗口时复用已有窗口并刷新策略', async () => {
     const harness = createManager();
     const first = await harness.manager.createMainWindow(appConfig());
+    first.emitReadyToShow();
     const second = await harness.manager.createMainWindow(appConfig({ window: windowConfig({ mode: 'fullscreen' }) }));
 
     expect(second).toBe(first);
@@ -483,6 +500,11 @@ describe('安全窗口创建', () => {
     expect(window).toBe(failing);
     expect(manager.getMainWindow()).toBe(failing);
     expect(events.filter((event) => event.type === 'main-load-failed')).toHaveLength(1);
+
+    // 收尾：销毁窗口以释放首屏兜底定时器，避免定时器在测试结束后仍挂起。
+    manager.beginShutdown();
+    window.close();
+    expect(window.isDestroyed()).toBe(true);
   });
 });
 
@@ -696,6 +718,7 @@ describe('配置窗口复用', () => {
   it('已打开时复用同一窗口并聚焦', () => {
     const harness = createManager();
     const first = harness.manager.openConfigWindow();
+    first.emitReadyToShow();
     const second = harness.manager.openConfigWindow();
 
     expect(second).toBe(first);
@@ -717,10 +740,180 @@ describe('配置窗口复用', () => {
   });
 });
 
+describe('首屏显示时序', () => {
+  /** 首屏占位底色：与配置界面 `--color-bg` 一致，避免就绪前出现白色空窗。 */
+  const BACKGROUND_COLOR = '#f5f6f8';
+
+  function startupConfig(initialState: 'tray' | 'minimized'): AppConfig {
+    const base = appConfig();
+    return { ...base, startup: { ...base.startup, initialState } };
+  }
+
+  it('主窗口以隐藏创建并带占位底色，ready-to-show 前不显示', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(appConfig());
+    const main = harness.mainWindow();
+
+    expect(harness.optionsLog[0]).toMatchObject({ show: false, backgroundColor: BACKGROUND_COLOR });
+    expect(main.calls).not.toContain('show');
+    expect(main.calls).not.toContain('showInactive');
+    expect(main.isVisible()).toBe(false);
+  });
+
+  it('ready-to-show 未触发时按兜底超时显示，避免远程页挂起导致窗口不出现', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createManager();
+      await harness.manager.createMainWindow(startupConfig('minimized'));
+      const main = harness.mainWindow();
+
+      await vi.advanceTimersByTimeAsync(2999);
+      expect(main.calls).not.toContain('showInactive');
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(main.calls).toContain('showInactive');
+      expect(main.isVisible()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('initialState=tray 时保持隐藏，兜底超时也不显示', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createManager();
+      await harness.manager.createMainWindow(startupConfig('tray'));
+      const main = harness.mainWindow();
+
+      main.emitReadyToShow();
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(main.calls).not.toContain('show');
+      expect(main.calls).not.toContain('showInactive');
+      expect(main.isVisible()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('initialState=minimized 时显示但不抢占焦点', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(startupConfig('minimized'));
+    const main = harness.mainWindow();
+    main.calls.length = 0;
+
+    main.emitReadyToShow();
+
+    expect(main.calls).toContain('showInactive');
+    expect(main.calls).not.toContain('focus');
+    expect(main.isVisible()).toBe(true);
+  });
+
+  it('首帧就绪前的主动显示被挂起，就绪后统一执行', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(startupConfig('tray'));
+    const main = harness.mainWindow();
+    main.calls.length = 0;
+
+    expect(harness.manager.showMainWindow()).toBe(true);
+    expect(main.calls).not.toContain('show');
+
+    main.emitReadyToShow();
+
+    expect(main.calls).toContain('show');
+    expect(main.calls).toContain('focus');
+    expect(main.isVisible()).toBe(true);
+  });
+
+  it('窗口被关闭转为隐藏后，兜底超时不再把它显示出来', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createManager();
+      await harness.manager.createMainWindow(startupConfig('minimized'));
+      const main = harness.mainWindow();
+
+      main.close();
+      expect(main.isDestroyed()).toBe(false);
+      expect(main.isVisible()).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      main.emitReadyToShow();
+
+      expect(main.calls).not.toContain('showInactive');
+      expect(main.isVisible()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closeAll 销毁窗口后兜底定时器被释放', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createManager();
+      await harness.manager.createMainWindow(appConfig());
+      const main = harness.mainWindow();
+
+      harness.manager.closeAll();
+      expect(main.isDestroyed()).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      main.emitReadyToShow();
+
+      expect(main.calls).not.toContain('show');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('配置窗口同样以隐藏创建并在 ready-to-show 后显示', () => {
+    const harness = createManager();
+    harness.manager.openConfigWindow();
+    const config = harness.configWindow();
+
+    expect(harness.optionsLog[0]).toMatchObject({ show: false, backgroundColor: BACKGROUND_COLOR });
+    expect(config.calls).not.toContain('show');
+
+    config.emitReadyToShow();
+
+    expect(config.calls).toContain('show');
+    expect(config.isVisible()).toBe(true);
+  });
+
+  it('配置窗口在首帧就绪前被再次打开时挂起显示', () => {
+    const harness = createManager();
+    const config = harness.manager.openConfigWindow();
+    config.calls.length = 0;
+
+    harness.manager.openConfigWindow();
+
+    expect(config.calls).not.toContain('show');
+
+    config.emitReadyToShow();
+
+    expect(config.calls).toContain('show');
+    expect(config.calls).toContain('focus');
+  });
+
+  it('窗口关闭后可以重新打开，并按同样的首屏时序显示', () => {
+    const harness = createManager();
+    const first = harness.manager.openConfigWindow();
+    first.emitReadyToShow();
+    first.close();
+
+    const second = harness.manager.openConfigWindow();
+
+    expect(second).not.toBe(first);
+    expect(second.calls).not.toContain('show');
+    second.emitReadyToShow();
+    expect(second.calls).toContain('show');
+  });
+});
+
 describe('主窗口显示与安全策略更新', () => {
   it('showMainWindow 恢复最小化并聚焦', async () => {
     const harness = createManager();
     const main = await harness.manager.createMainWindow(appConfig());
+    main.emitReadyToShow();
     main.minimized = true;
     main.visible = false;
 

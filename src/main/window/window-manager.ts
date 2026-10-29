@@ -9,6 +9,8 @@
  *   （`rules/architecture.md`）：远程窗口不加载 preload，配置窗口只加载最小 preload；
  * - 平台差异通过 `PlatformCapabilities` 表达，不假设 Windows 行为：
  *   Linux Wayland 下置顶降级、Kiosk/全屏不支持时降级都要记录原因；
+ * - 两类窗口都以 `show: false` 加占位底色创建，等 `ready-to-show` 再按
+ *   `startup.initialState` 显示（见 `InitialReveal`），避免首屏白闪；
  * - Electron API 通过 `createWindow` 等注入端口传入（`rules/testing-release.md`），
  *   因此本模块可在纯 Node 环境下完整测试；真实 `BrowserWindow` 结构上满足
  *   `BrowserWindowLike`（文件末尾有编译期断言）。
@@ -18,7 +20,7 @@ import { posix, win32 } from 'node:path';
 
 import type { BrowserWindow } from 'electron';
 
-import type { AppConfig, SecurityConfig, WindowConfig, WindowMode } from '../config/config-types';
+import type { AppConfig, InitialState, SecurityConfig, WindowConfig, WindowMode } from '../config/config-types';
 import { mapAlwaysOnTopLevel } from '../platform/capability-detector';
 import type { MappedWindowLevel, PlatformCapabilities } from '../platform/platform-adapter';
 import {
@@ -43,6 +45,33 @@ const CONFIG_WINDOW_MIN_WIDTH = 720;
 const CONFIG_WINDOW_MIN_HEIGHT = 560;
 
 const DEFAULT_RENDERER_ENTRY = 'dist/renderer/config/index.html';
+
+/**
+ * 窗口就绪前的占位底色。
+ *
+ * 与配置界面 `--color-bg`（#f5f6f8）、离线页底色（#f4f6f5）一致：
+ * 窗口以 `show: false` 创建，首帧绘制完成前由该底色填充，
+ * 避免远程页或本地页加载期间先出现一帧操作系统默认的白色空窗。
+ */
+const WINDOW_BACKGROUND_COLOR = '#f5f6f8';
+
+/**
+ * `ready-to-show` 兜底超时。
+ *
+ * 远程页面挂起（DNS、连接、长任务）时 `ready-to-show` 可能永不触发，
+ * 超过该时限仍按初始驻留状态显示，避免窗口始终不出现。
+ */
+const READY_TO_SHOW_TIMEOUT_MS = 3000;
+
+/** 初始驻留状态对应的首屏显示方式（规格 §6 `startup.initialState`、§9）。 */
+type InitialVisibility = 'show' | 'showInactive' | 'hidden';
+
+/** `startup.initialState` → 首屏显示方式：托盘驻留保持隐藏，最小化显示但不抢占焦点。 */
+function resolveInitialVisibility(state: InitialState): InitialVisibility {
+  if (state === 'tray') return 'hidden';
+  if (state === 'minimized') return 'showInactive';
+  return 'show';
+}
 
 /** 窗口矩形。 */
 export interface Rectangle {
@@ -73,6 +102,8 @@ export interface BrowserWindowConstructorOptions {
   minWidth?: number;
   minHeight?: number;
   show?: boolean;
+  /** 首帧绘制完成前的占位底色，格式为 `#rrggbb` 或 `#aarrggbb`。 */
+  backgroundColor?: string;
   center?: boolean;
   title?: string;
   autoHideMenuBar?: boolean;
@@ -87,6 +118,8 @@ export interface BrowserWindowLike {
   loadFile(filePath: string): Promise<void>;
   webContents: GuardWebContents;
   on(event: 'close' | 'closed', listener: (event?: GuardEvent) => void): unknown;
+  /** 首帧绘制完成事件；只关心一次，因此只要求 `once`。 */
+  once(event: 'ready-to-show', listener: () => void): unknown;
   getBounds(): Rectangle;
   setBounds(bounds: Partial<Rectangle>): void;
   isFullScreen(): boolean;
@@ -100,6 +133,8 @@ export interface BrowserWindowLike {
   isDestroyed(): boolean;
   restore(): void;
   show(): void;
+  /** 显示但不抢占焦点，用于 `startup.initialState=minimized`。 */
+  showInactive(): void;
   focus(): void;
   hide(): void;
   close(): void;
@@ -230,6 +265,74 @@ export function createConfigWindowLoader(options: {
 }
 
 /**
+ * 首屏显示时序。
+ *
+ * 窗口一律以 `show: false` 创建，等 `ready-to-show`（首帧已绘制）再显示，
+ * 避免页面加载期间先出现一帧占位底色的空窗；`ready-to-show` 不触发时由兜底
+ * 超时补显示，避免远程页挂起导致窗口永不出现。
+ *
+ * 主动显示请求（托盘「立即显示窗口」、二次启动唤醒）在首帧未就绪时同样挂起，
+ * 就绪后统一执行，因此不会为抢显示而牺牲首屏质量。
+ *
+ * 资源释放（`rules/architecture.md`「所有资源必须可释放」）：
+ * - `close`：放弃挂起的自动显示——close-to-hide 之后不得再把窗口弹出来；
+ * - `closed`：清除兜底定时器。
+ */
+class InitialReveal<T extends BrowserWindowLike> {
+  private ready = false;
+  private disposed = false;
+  private pending: (() => void) | null;
+  private timer: ReturnType<typeof setTimeout> | null;
+
+  constructor(
+    window: T,
+    initialAction: (() => void) | null,
+    timeoutMs: number = READY_TO_SHOW_TIMEOUT_MS,
+  ) {
+    this.pending = initialAction;
+    window.once('ready-to-show', () => this.markReady());
+    this.timer = setTimeout(() => this.markReady(), timeoutMs);
+  }
+
+  /** 主动显示；首帧未就绪时挂起，就绪后与初始显示一并执行。 */
+  request(action: () => void): void {
+    if (this.disposed) return;
+    if (this.ready) {
+      action();
+      return;
+    }
+    this.pending = action;
+  }
+
+  /** 窗口被关闭（含 close-to-hide 的拦截关闭）时放弃挂起的自动显示。 */
+  dropPending(): void {
+    this.pending = null;
+  }
+
+  /** 窗口已销毁：清除兜底定时器并丢弃挂起动作。 */
+  dispose(): void {
+    this.disposed = true;
+    this.pending = null;
+    this.clearTimer();
+  }
+
+  private markReady(): void {
+    this.clearTimer();
+    if (this.disposed) return;
+    this.ready = true;
+    const action = this.pending;
+    this.pending = null;
+    action?.();
+  }
+
+  private clearTimer(): void {
+    if (this.timer === null) return;
+    clearTimeout(this.timer);
+    this.timer = null;
+  }
+}
+
+/**
  * 窗口管理器。
  *
  * 生命周期：`createMainWindow` / `openConfigWindow` 创建窗口并立即应用安全与平台策略；
@@ -240,6 +343,7 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
   private mainWindow: T | null = null;
   private configWindow: T | null = null;
   private readonly guards = new Map<T, NavigationGuardHandle>();
+  private readonly reveals = new Map<T, InitialReveal<T>>();
   private security: SecurityConfig = createLocalConfigSecurityPolicy();
   private windowPolicy: { window: WindowConfig; capabilities: PlatformCapabilities } | null = null;
   private targetUrl: string | undefined;
@@ -273,8 +377,10 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     if (existing !== null) {
       this.applyWindowPolicy(config.window, this.deps.capabilities);
       this.updateSecurity(config.security, config.targetUrl);
-      existing.show();
-      existing.focus();
+      this.revealWindow(existing, () => {
+        existing.show();
+        existing.focus();
+      });
       this.emit({ type: 'main-window-reused' });
       return existing;
     }
@@ -284,7 +390,8 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
       height: MAIN_WINDOW_HEIGHT,
       minWidth: MAIN_WINDOW_MIN_WIDTH,
       minHeight: MAIN_WINDOW_MIN_HEIGHT,
-      show: true,
+      show: false,
+      backgroundColor: WINDOW_BACKGROUND_COLOR,
       autoHideMenuBar: true,
       title: 'UniShell',
       webPreferences: secureRemoteWebPreferences(),
@@ -292,6 +399,7 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     this.mainWindow = window;
 
     this.installGuards(window, effectiveSecurity, 'main', config.window.mode === 'kiosk');
+    this.attachInitialReveal(window, resolveInitialVisibility(config.startup.initialState));
     this.applyWindowPolicy(config.window, this.deps.capabilities);
     this.registerMainWindowLifecycle(window);
     this.emit({ type: 'main-window-created' });
@@ -309,8 +417,10 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
   openConfigWindow(): T {
     const existing = this.getConfigWindow();
     if (existing !== null) {
-      existing.show();
-      existing.focus();
+      this.revealWindow(existing, () => {
+        existing.show();
+        existing.focus();
+      });
       this.emit({ type: 'config-window-reused' });
       return existing;
     }
@@ -320,7 +430,8 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
       height: CONFIG_WINDOW_HEIGHT,
       minWidth: CONFIG_WINDOW_MIN_WIDTH,
       minHeight: CONFIG_WINDOW_MIN_HEIGHT,
-      show: true,
+      show: false,
+      backgroundColor: WINDOW_BACKGROUND_COLOR,
       autoHideMenuBar: true,
       title: 'UniShell 配置',
       webPreferences: {
@@ -331,6 +442,8 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     this.configWindow = window;
 
     this.installGuards(window, createLocalConfigSecurityPolicy(), 'config', false);
+    // 配置窗口是用户显式打开的入口（含配置不可用时的首次启动），就绪即显示。
+    this.attachInitialReveal(window, 'show');
     window.on('closed', () => {
       this.releaseWindow(window);
     });
@@ -380,9 +493,22 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
   showMainWindow(): boolean {
     const window = this.getMainWindow();
     if (window === null) return false;
-    if (window.isMinimized()) window.restore();
-    window.show();
-    window.focus();
+    this.revealWindow(window, () => {
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+    });
+    return true;
+  }
+
+  /** 显示并聚焦配置窗口；窗口不存在时返回 false。 */
+  focusConfigWindow(): boolean {
+    const window = this.getConfigWindow();
+    if (window === null) return false;
+    this.revealWindow(window, () => {
+      window.show();
+      window.focus();
+    });
     return true;
   }
 
@@ -577,8 +703,45 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
       // 避免窗口在 closed 事件中触发销毁异常
     }
     this.guards.delete(window);
+    this.reveals.delete(window);
     if (this.mainWindow === window) this.mainWindow = null;
     if (this.configWindow === window) this.configWindow = null;
+  }
+
+  /**
+   * 挂载首屏显示时序，并接管该窗口的生命周期释放。
+   * 初始驻留为托盘时不做自动显示，等调用方明确要求（托盘、唤醒）再显示。
+   */
+  private attachInitialReveal(window: T, visibility: InitialVisibility): void {
+    const reveal = new InitialReveal<T>(
+      window,
+      visibility === 'hidden' ? null : () => this.applyInitialVisibility(window, visibility),
+    );
+    this.reveals.set(window, reveal);
+    // close-to-hide 之后不得再把窗口弹出来；closed 时释放兜底定时器。
+    window.on('close', () => reveal.dropPending());
+    window.on('closed', () => reveal.dispose());
+  }
+
+  /** 首屏显示动作：最小化显示不抢焦点，其余显示并聚焦。 */
+  private applyInitialVisibility(window: T, visibility: InitialVisibility): void {
+    if (window.isDestroyed()) return;
+    if (visibility === 'showInactive') {
+      window.showInactive();
+      return;
+    }
+    window.show();
+    window.focus();
+  }
+
+  /** 主动显示：首帧未就绪时由首屏时序挂起，避免出现占位底色空窗。 */
+  private revealWindow(window: T, action: () => void): void {
+    const reveal = this.reveals.get(window);
+    if (reveal === undefined) {
+      action();
+      return;
+    }
+    reveal.request(action);
   }
 
   private emit(event: WindowManagerEvent): void {

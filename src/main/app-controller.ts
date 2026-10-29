@@ -294,17 +294,27 @@ export class AppController {
       return;
     }
 
-    await this.showMainWindow();
+    // 延迟到期属于隐性展示：initialState=minimized 时由窗口层在 ready-to-show
+    // 以 showInactive 呈现，不抢占焦点；其余状态需要显式显示并聚焦。
+    await this.showMainWindow({ revealAfterCreate: config.startup.initialState !== 'minimized' });
     this.state = 'running';
   }
 
-  private async showMainWindow(): Promise<void> {
+  /**
+   * 创建或显示主窗口。
+   *
+   * 窗口按 `startup.initialState` 可能是隐藏创建的（`tray` 驻留），因此创建后
+   * 是否显式显示由调用方意图决定：托盘、唤醒等显式请求一律显示并聚焦，
+   * 延迟到期这类隐性展示在 `minimized` 下交给窗口层的首屏时序处理。
+   */
+  private async showMainWindow(options: { revealAfterCreate: boolean }): Promise<void> {
     const config = this.config;
     if (!config) return;
 
     if (!this.mainWindowCreated) {
       await this.deps.window.createMainWindow(config);
       this.mainWindowCreated = true;
+      if (options.revealAfterCreate) await this.deps.window.showAndFocusMain();
       return;
     }
 
@@ -597,7 +607,7 @@ export class AppController {
       return;
     }
 
-    await this.showMainWindow();
+    await this.showMainWindow({ revealAfterCreate: true });
     this.state = 'running';
   }
 
