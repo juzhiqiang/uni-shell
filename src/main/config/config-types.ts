@@ -38,6 +38,11 @@ export interface NetworkConfig {
   proxyMode: ProxyMode;
   proxyServer: string;
   proxyBypass: string;
+  /**
+   * 接口域名列表：只有命中这些主机的请求经过代理，其余流量直连（规格 §7 接口代理语义）。
+   * 每项为主机名或 `*.example.com` 子域通配，不带协议、端口和路径。
+   */
+  apiProxyHosts: string[];
   retryIntervalSec: number;
   requestTimeoutSec: number;
   offlinePageEnabled: boolean;
@@ -72,6 +77,15 @@ export interface LoggingConfig {
   retentionDays: number;
 }
 
+/**
+ * 外观配置。平台无关：只记录配置目录中的图标文件名，
+ * 平台差异（托盘尺寸、Dock）由 `src/main/appearance/` 适配层表达（规格 §5.4）。
+ */
+export interface AppearanceConfig {
+  /** 配置目录中的图标文件名（如 `app-icon.png`）；空串表示使用内置默认图标。 */
+  icon: string;
+}
+
 export interface AppConfig {
   schemaVersion: number;
   /** 必填，仅允许 http/https 且包含主机名。 */
@@ -81,5 +95,6 @@ export interface AppConfig {
   startup: StartupConfig;
   maintenance: MaintenanceConfig;
   security: SecurityConfig;
+  appearance: AppearanceConfig;
   logging: LoggingConfig;
 }

@@ -214,6 +214,7 @@ describe('config schema', () => {
         proxyMode: 'direct',
         proxyServer: '',
         proxyBypass: '',
+        apiProxyHosts: [],
         retryIntervalSec: 3,
         requestTimeoutSec: 20,
         offlinePageEnabled: true,
@@ -236,6 +237,7 @@ describe('config schema', () => {
         allowPopups: false,
         allowDownloads: false,
       });
+      expect(migrated.appearance).toEqual({ icon: '' });
       expect(migrated.logging).toEqual({ level: 'info', retentionDays: 14 });
     });
 
@@ -401,6 +403,129 @@ describe('config schema', () => {
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.issues.some((issue) => issue.path === 'network.proxyServer')).toBe(true);
+      }
+    });
+  });
+
+  describe('network.apiProxyHosts（接口域名，规格 §7）', () => {
+    it('默认补齐为空数组', () => {
+      const migrated = migrateConfig({ targetUrl: 'https://example.com' });
+      expect(migrated.network.apiProxyHosts).toEqual([]);
+    });
+
+    it('接受主机名、IPv4 与子域通配，统一小写', () => {
+      const result = validateConfig(
+        buildConfigWith('network.apiProxyHosts', ['API.Example.com', '10.0.0.5', '*.Internal.example.com']),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.network.apiProxyHosts).toEqual(['api.example.com', '10.0.0.5', '*.internal.example.com']);
+      }
+    });
+
+    it('把点号开头的前导点形式归一化为 *. 子域通配', () => {
+      const result = validateConfig(buildConfigWith('network.apiProxyHosts', ['.example.com']));
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.network.apiProxyHosts).toEqual(['*.example.com']);
+      }
+    });
+
+    it('去重且保持首次出现顺序', () => {
+      const result = validateConfig(
+        buildConfigWith('network.apiProxyHosts', ['b.example.com', 'a.example.com', 'B.example.com', 'b.example.com']),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.network.apiProxyHosts).toEqual(['b.example.com', 'a.example.com']);
+      }
+    });
+
+    it.each([
+      ['带协议', ['http://api.example.com']],
+      ['带端口', ['api.example.com:8080']],
+      ['带路径', ['api.example.com/v1']],
+      ['带凭据', ['user@api.example.com']],
+      ['空条目', ['']],
+      ['空白条目', ['   ']],
+      ['空标签', ['api..example.com']],
+      ['标签以连字符开头', ['-api.example.com']],
+      ['标签以连字符结尾', ['api-.example.com']],
+      ['仅通配符', ['*.']],
+      ['通配后缺少域名', ['*']],
+      ['含空格', ['api example.com']],
+      ['含逗号或分号', ['a.example.com,b.example.com', 'a.example.com;b.example.com']],
+      ['含下划线', ['api_1.example.com']],
+    ])('拒绝非法接口域名：%s', (_name, hosts) => {
+      const result = validateConfig(buildConfigWith('network.apiProxyHosts', hosts));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.issues.some((issue) => issue.path === 'network.apiProxyHosts')).toBe(true);
+      }
+    });
+
+    it('拒绝非字符串与非数组类型', () => {
+      for (const value of ['api.example.com', 42, null, {}, [42], [null]]) {
+        const result = validateConfig(buildConfigWith('network.apiProxyHosts', value));
+        expect(result.ok, `应当拒绝 ${JSON.stringify(value)}`).toBe(false);
+      }
+    });
+
+    it('接口域名数量上限为 100', () => {
+      const hosts = Array.from({ length: 101 }, (_unused, index) => `api${index}.example.com`);
+      const result = validateConfig(buildConfigWith('network.apiProxyHosts', hosts));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.issues.some((issue) => issue.path === 'network.apiProxyHosts')).toBe(true);
+      }
+
+      const ok = validateConfig(buildConfigWith('network.apiProxyHosts', hosts.slice(0, 100)));
+      expect(ok.ok).toBe(true);
+    });
+
+    it('fixed/pac 模式未填接口域名时不阻断加载（由界面提示与日志告警承担）', () => {
+      for (const proxyMode of ['fixed', 'pac', 'system']) {
+        const result = migrateConfig({
+          targetUrl: 'https://example.com',
+          network: {
+            proxyMode,
+            proxyServer: proxyMode === 'pac' ? 'https://proxy.example.com/proxy.pac' : 'proxy.example.com:8080',
+          },
+        });
+        expect(result.network.proxyMode).toBe(proxyMode);
+        expect(result.network.apiProxyHosts).toEqual([]);
+      }
+    });
+  });
+
+  describe('appearance.icon（自定义应用图标，规格 §5.4、§6）', () => {
+    it('默认补齐为空字符串（使用内置默认图标）', () => {
+      const migrated = migrateConfig({ targetUrl: 'https://example.com' });
+      expect(migrated.appearance.icon).toBe('');
+    });
+
+    it('接受配置目录中的 PNG/ICO/ICNS 文件名', () => {
+      for (const icon of ['app-icon.png', 'app-icon.ico', 'app-icon.icns', 'MyLogo-2026.png']) {
+        const result = validateConfig(buildConfigWith('appearance.icon', icon));
+        expect(result.ok, `应当接受 ${icon}`).toBe(true);
+      }
+    });
+
+    it.each([
+      ['路径穿越', ['../app-icon.png', '..\\app-icon.png']],
+      ['绝对路径', ['/etc/app-icon.png', 'C:\\icons\\app-icon.png']],
+      ['带目录', ['icons/app-icon.png']],
+      ['不支持的扩展名', ['app-icon.jpg', 'app-icon.svg', 'app-icon.exe', 'app-icon.png.exe']],
+      ['隐藏文件', ['.app-icon.png']],
+      ['空与空白', ['   ', '\t']],
+      ['非字符串', [42, null, {}, ['app-icon.png']]],
+    ])('拒绝非法图标配置：%s', (_name, values) => {
+      for (const value of values) {
+        const result = validateConfig(buildConfigWith('appearance.icon', value));
+        expect(result.ok, `应当拒绝 ${JSON.stringify(value)}`).toBe(false);
+        if (!result.ok) {
+          expect(result.issues.some((issue) => issue.path === 'appearance.icon')).toBe(true);
+        }
       }
     });
   });

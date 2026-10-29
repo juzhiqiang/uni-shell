@@ -80,6 +80,121 @@ const positiveIntSchema = z.int().min(1, '必须是大于 0 的整数');
 /** 去除首尾空白后仍须非空，避免空白字符串被当成有效值。 */
 const nonEmptyStringSchema = z.string().trim().min(1, '不能为空');
 
+/** 接口域名数量上限，避免误粘贴超大列表导致 PAC 策略膨胀。 */
+const MAX_API_PROXY_HOSTS = 100;
+
+const HOST_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+const IPV4_PATTERN = /^(\d{1,3}\.){3}\d{1,3}$/;
+
+function isDomainName(value: string): boolean {
+  if (value.length === 0 || value.length > 253) return false;
+  return value.split('.').every((label) => label.length > 0 && label.length <= 63 && HOST_LABEL_PATTERN.test(label));
+}
+
+function isIpv4Literal(value: string): boolean {
+  if (!IPV4_PATTERN.test(value)) return false;
+  return value.split('.').every((part) => Number.parseInt(part, 10) <= 255);
+}
+
+/** 归一化：去空白、小写；`.example.com` 前导点形式统一为 `*.example.com` 子域通配。 */
+function normalizeApiProxyHost(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  return trimmed.startsWith('.') ? `*${trimmed}` : trimmed;
+}
+
+/**
+ * 接口域名校验（规格 §7）：主机名、IPv4 或 `*.domain` 子域通配；
+ * 拒绝协议、端口、路径、凭据、空标签等写法——PAC 策略只按主机名匹配。
+ */
+function isValidApiProxyHost(value: string): boolean {
+  if (value.startsWith('*.')) return isDomainName(value.slice(2));
+  return isDomainName(value) || isIpv4Literal(value);
+}
+
+/**
+ * 配置目录中的图标文件名（规格 §5.4）：裸文件名，仅 PNG/ICO/ICNS。
+ * 允许用户自命名文件，但必须是安全裸名，杜绝路径穿越与绝对路径。
+ */
+const ICON_FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|ico|icns)$/;
+
+export function isIconFileName(value: string): boolean {
+  if (value.length === 0 || value.length > 100) return false;
+  if (value.includes('..')) return false;
+  return ICON_FILE_NAME_PATTERN.test(value);
+}
+
+/** fixed 模式支持的代理协议（PAC 可表达的类型；quic 无 PAC 对应关键字，不再支持）。 */
+const PROXY_ENDPOINT_PROTOCOLS = new Set(['http:', 'https:', 'socks4:', 'socks5:']);
+
+/**
+ * 校验 fixed 模式的单个代理服务器地址（规格 §7）。
+ * 合法返回 null，否则返回可直接展示的错误信息；
+ * 拒绝按协议路由（`http=a;https=b`）与多级回退（`a,b`）——接口代理只需要一个代理。
+ */
+export function validateProxyEndpointValue(value: string): string | null {
+  const endpoint = value.trim();
+  if (endpoint === '') return 'fixed 代理模式必须填写 proxyServer';
+  if (/[=;,]/.test(endpoint)) {
+    return 'proxyServer 只支持单个代理服务器地址（如 http://proxy.internal:8080），不支持按协议路由或多级回退';
+  }
+
+  const candidate = endpoint.includes('://') ? endpoint : `http://${endpoint}`;
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return 'proxyServer 必须是有效的代理服务器地址';
+  }
+  if (!PROXY_ENDPOINT_PROTOCOLS.has(url.protocol)) {
+    return 'proxyServer 使用了不支持的协议（支持 http/https/socks4/socks5）';
+  }
+  if (!url.hostname || url.username || url.password) {
+    return 'proxyServer 必须包含主机名且不能包含代理凭据';
+  }
+  if ((url.pathname !== '' && url.pathname !== '/') || url.search || url.hash) {
+    return 'proxyServer 代理地址不能包含路径、查询参数或片段';
+  }
+  return null;
+}
+
+const apiProxyHostsSchema = z
+  .array(z.string())
+  .transform((entries) => {
+    const normalized: string[] = [];
+    for (const entry of entries) {
+      const value = normalizeApiProxyHost(entry);
+      if (!normalized.includes(value)) normalized.push(value);
+    }
+    return normalized;
+  })
+  .superRefine((hosts, ctx) => {
+    if (hosts.length > MAX_API_PROXY_HOSTS) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `接口域名最多 ${MAX_API_PROXY_HOSTS} 个`,
+      });
+      return;
+    }
+    for (const host of hosts) {
+      if (!isValidApiProxyHost(host)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `接口域名格式不正确：${host === '' ? '(空)' : host}（应为 api.example.com 或 *.example.com，不带协议、端口和路径）`,
+        });
+      }
+    }
+  });
+
+const iconFileNameSchema = z.string().superRefine((value, ctx) => {
+  if (value === '') return;
+  if (!isIconFileName(value)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: '图标必须是配置目录中的 PNG/ICO/ICNS 文件名（如 app-icon.png），不能带路径',
+    });
+  }
+});
+
 function proxyServerContainsCredentials(value: string): boolean {
   const endpoints = value.split(';').flatMap((group) => {
     const routeSeparator = group.indexOf('=');
@@ -129,6 +244,7 @@ const networkSchema = z
     proxyMode: z.enum(['direct', 'system', 'fixed', 'pac'] satisfies ProxyMode[]).default('direct'),
     proxyServer: z.string().default(''),
     proxyBypass: z.string().default(''),
+    apiProxyHosts: apiProxyHostsSchema.default([]),
     retryIntervalSec: positiveIntSchema.default(3),
     requestTimeoutSec: positiveIntSchema.default(20),
     offlinePageEnabled: z.boolean().default(true),
@@ -145,6 +261,13 @@ const networkSchema = z
 
     if (network.proxyMode === 'fixed' && !network.proxyServer.trim()) {
       ctx.addIssue({ code: 'custom', path: ['proxyServer'], message: 'fixed 代理模式必须填写 proxyServer' });
+    }
+
+    if (network.proxyMode === 'fixed') {
+      const problem = validateProxyEndpointValue(network.proxyServer);
+      if (problem !== null) {
+        ctx.addIssue({ code: 'custom', path: ['proxyServer'], message: problem });
+      }
     }
 
     if (network.proxyMode === 'pac' && parseHttpUrl(network.proxyServer) === null) {
@@ -186,6 +309,13 @@ const loggingSchema = z
   })
   .prefault({});
 
+/** 外观段：自定义图标文件名；缺省使用内置默认图标（规格 §5.4）。 */
+const appearanceSchema = z
+  .object({
+    icon: iconFileNameSchema.default(''),
+  })
+  .prefault({});
+
 /**
  * 根对象使用 looseObject：未知顶层字段原样保留，便于跨版本配置往返，
  * 同时不会因为多余字段导致启动失败（规格 §5.3）。
@@ -199,6 +329,7 @@ export const appConfigSchema = z.looseObject({
   startup: startupSchema,
   maintenance: maintenanceSchema,
   security: securitySchema,
+  appearance: appearanceSchema,
   logging: loggingSchema,
 });
 
