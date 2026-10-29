@@ -696,6 +696,20 @@ async function bootstrap(): Promise<void> {
 
 let activeController: AppController | undefined;
 
+/**
+ * Windows 任务栏归属标识（AppUserModelID）。
+ *
+ * 必须与 electron-builder 三个平台配置的 `appId` 保持一致。Electron 默认不设置
+ * AUMID，Windows 会退回进程默认值，导致运行窗口与任务栏固定项关联不上、
+ * 任务栏按钮图标刷新不可靠（托盘与标题栏图标不受影响，因为它们来自窗口图标本身）。
+ * 需在 app ready 之前调用，因此放在模块顶层。
+ */
+const APP_USER_MODEL_ID = 'com.unishell.desktop';
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId(APP_USER_MODEL_ID);
+}
+
 const singleInstancePort = createElectronSingleInstancePort();
 
 const isFirstInstance = acquireSingleInstance(
