@@ -1,13 +1,16 @@
 ---
 task_id: "15"
 date: 2026-10-29
-status: in_progress
+status: blocked
 owner: Fable 5
 depends_on: [14]
 spec: ../../../electron-desktop-shell-product-spec-v2.1-cross-platform.md
 review_item: R1（P0）
 spec_change: 是（§7 恢复、§12 诊断补充渲染进程崩溃条目）
 ---
+
+> **状态说明（2026-10-30）**：代码与自动化门禁已全部完成并提交 `b5382e6`，标记
+> `blocked` 仅因实机验收（任务管理器结束渲染进程）沙箱无法执行，原因同任务 16。
 
 ### Task 15：渲染进程崩溃与无响应恢复
 
