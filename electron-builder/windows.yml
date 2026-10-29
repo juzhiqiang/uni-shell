@@ -1,0 +1,30 @@
+appId: com.unishell.desktop
+productName: UniShell
+asar: true
+directories:
+  output: release/windows
+files:
+  - dist/**/*
+  - package.json
+extraResources:
+  - from: resources/config.example.json
+    to: config.example.json
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  selectPerMachineByDefault: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
+  include: build/installer.nsh

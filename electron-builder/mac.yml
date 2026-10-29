@@ -1,0 +1,24 @@
+appId: com.unishell.desktop
+productName: UniShell
+asar: true
+directories:
+  output: release/mac
+files:
+  - dist/**/*
+  - package.json
+extraResources:
+  - from: resources/config.example.json
+    to: config.example.json
+mac:
+  category: public.app-category.utilities
+  target:
+    - target: dmg
+      arch:
+        - universal
+    - target: zip
+      arch:
+        - universal
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  forceCodeSigning: true
