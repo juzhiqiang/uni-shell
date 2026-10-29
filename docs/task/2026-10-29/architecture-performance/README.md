@@ -21,7 +21,7 @@
 | 20 | 待开始 | 待指派 | 14、15、19 | [启动关键路径优化](20-startup-critical-path.md) | P1 | 否 |
 | 21 | 待开始 | 待指派 | 15、17、20 | [拆分 main.ts 平台适配器](21-split-main-composition-root.md) | A2 | 否 |
 | 22 | 已阻塞 | 待指派 | 19、21 | [配置保存热更新分级](22-config-hot-apply.md) | A5 | 是（§5.2/§14.1） |
-| 23 | 待开始 | 待指派 | 无 | [日志写入流化与批量刷新](23-logger-write-stream.md) | P3 | 否 |
+| 23 | 已完成 | Fable 5 | 无 | [日志写入流化与批量刷新](23-logger-write-stream.md) | P3 | 否 |
 | 24 | 已阻塞 | 待指派 | 14、15 | [重试退避与离线页策略](24-retry-backoff.md) | P5 | 是（§7 重试语义） |
 
 ## 依赖与并行批次
