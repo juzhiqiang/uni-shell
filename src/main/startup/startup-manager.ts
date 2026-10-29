@@ -130,6 +130,11 @@ export async function setOpenAtLogin(
   const mechanism = mechanismFor(port.platform);
 
   try {
+    const current = await port.query();
+    if (current === enabled) {
+      return { ok: true, enabled, mechanism };
+    }
+
     const applied = await port.apply(enabled);
     if (!applied.ok) {
       return { ok: false, enabled: false, mechanism, reason: applied.reason ?? '登录项写入失败' };

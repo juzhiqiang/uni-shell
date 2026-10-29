@@ -245,6 +245,70 @@ function createDeps(overrides: CreateDepsOverrides = {}) {
 }
 
 describe('AppController 启动', () => {
+  it('登录项查询未完成时也继续创建主窗口', async () => {
+    let resolveQuery!: (enabled: boolean) => void;
+    let queryStarted = false;
+    const loginItem = {
+      platform: 'linux' as const,
+      apply: vi.fn(async () => ({ ok: true })),
+      query: () => {
+        queryStarted = true;
+        return new Promise<boolean>((resolve) => { resolveQuery = resolve; });
+      },
+    };
+    const base = createDefaultConfig('https://example.com');
+    const config = { ...base, startup: { ...base.startup, openAtLogin: true } };
+    const { deps, fakeWindow } = createDeps({
+      loadConfig: async () => loadedResult(config),
+      loginItem,
+    });
+
+    await new AppController(deps).start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+    expect(fakeWindow.calls).toContain('createMainWindow');
+    expect(queryStarted).toBe(true);
+    expect(loginItem.apply).not.toHaveBeenCalled();
+    resolveQuery(true);
+  });
+
+  it('代理应用完成前不创建主窗口', async () => {
+    let resolveProxy!: () => void;
+    const proxy = { apply: () => new Promise<{ mode: 'direct'; effective: true; hostCount: number; proxiedHostCount: number; notes: string[] }>((resolve) => {
+      resolveProxy = () => resolve({ mode: 'direct', effective: true, hostCount: 0, proxiedHostCount: 0, notes: [] });
+    }) };
+    const { deps, fakeWindow } = createDeps({ proxy });
+
+    const starting = new AppController(deps).start({ argv: ['app'], workingDirectory: '/work', env: {} });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fakeWindow.calls).not.toContain('createMainWindow');
+    resolveProxy();
+    await starting;
+    expect(fakeWindow.calls).toContain('createMainWindow');
+  });
+
+  it('记录配置加载和代理应用的启动阶段', async () => {
+    const stages: string[] = [];
+    const { deps } = createDeps({ startupTiming: (stage) => stages.push(stage) });
+
+    await new AppController(deps).start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+    expect(stages).toEqual(['configLoaded', 'proxyApplied']);
+  });
+
+  it('配置不可用时也记录配置加载阶段', async () => {
+    const stages: string[] = [];
+    const { deps } = createDeps({
+      loadConfig: async () => ({ status: 'missing', path: PATHS.configPath, source: 'cli' }),
+      startupTiming: (stage) => stages.push(stage),
+    });
+
+    await new AppController(deps).start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+    expect(stages).toEqual(['configLoaded']);
+  });
+
   it('有效配置时创建主窗口并进入运行状态', async () => {
     const { deps, fakeWindow } = createDeps();
     const controller = new AppController(deps);

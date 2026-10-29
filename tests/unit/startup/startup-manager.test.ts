@@ -200,6 +200,17 @@ describe('runStartupDelay', () => {
 });
 
 describe('setOpenAtLogin', () => {
+  it('目标状态已一致时只查询，不重复写入登录项', async () => {
+    const fake = createFakeLoginItemPort({ platform: 'linux' });
+    await setOpenAtLogin(true, { port: fake.port });
+    fake.applied.length = 0;
+
+    const result = await setOpenAtLogin(true, { port: fake.port });
+
+    expect(result).toMatchObject({ ok: true, enabled: true, mechanism: 'xdg-autostart' });
+    expect(fake.applied).toEqual([]);
+  });
+
   it('启用时写入登录项并带上登录启动标记', async () => {
     const fake = createFakeLoginItemPort({ platform: 'linux' });
 

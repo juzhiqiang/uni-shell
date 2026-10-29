@@ -220,6 +220,31 @@ describe('登录自启接入', () => {
     expect(fakeLoginItem.applied).toEqual([true]);
   });
 
+  it('启动时登录项已开启则不重复写入', async () => {
+    const base = createDefaultConfig('https://example.com');
+    const config = { ...base, startup: { ...base.startup, openAtLogin: true } };
+    const apply = vi.fn(async () => {
+      throw new Error('should not rewrite existing login item');
+    });
+    const loginItem: LoginItemPort = {
+      platform: 'linux',
+      apply,
+      async query() {
+        return true;
+      },
+    };
+
+    const { deps } = createDeps({
+      loginItem,
+      loadConfig: async () => ({ status: 'loaded', path: PATHS.configPath, source: 'cli', config }),
+    });
+
+    await expect(new AppController(deps).start({ argv: ['app'], workingDirectory: '/work', env: {} })).resolves.toBeUndefined();
+    await Promise.resolve();
+
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it('配置 openAtLogin=false 时不写入登录项', async () => {
     const { deps, fakeLoginItem } = createDeps();
 

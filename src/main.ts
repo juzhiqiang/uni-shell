@@ -225,16 +225,6 @@ async function resolveAppIcon(
     logger.warn('icon-fallback', { reason: icon.fallbackReason });
   }
 
-  // 清理未被引用的残留图标文件（用户更换格式或恢复默认后）。
-  const removed = await removeUnreferencedIconFiles({
-    configDirectory: paths.writeDirectory,
-    configuredIcon: icon.fileName ?? '',
-    fs: iconFileSystem,
-  });
-  if (removed.length > 0) {
-    logger.info('icon-files-cleaned', { removed });
-  }
-
   return icon;
 }
 
@@ -436,7 +426,8 @@ function isLocalOfflinePage(url: string): boolean {
  * - `render-process-gone` / `unresponsive` / `responsive` 交给控制器的崩溃窗口：
  *   崩溃不产生 `did-fail-load`，重试控制器不会被触发，必须由进程级事件驱动恢复。
  */
-function attachMainWindowDiagnostics(window: BrowserWindow): void {
+function attachMainWindowDiagnostics(window: BrowserWindow, onFirstLoad: () => void): void {
+  window.webContents.once('did-finish-load', onFirstLoad);
   window.webContents.on(
     'did-fail-load',
     (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
@@ -470,6 +461,7 @@ function createWindowPortAdapter(
   closeStaleWindows(): void;
 } {
   const createMain = async (config: AppConfig): Promise<void> => {
+    session.fromPartition(REMOTE_PARTITION).preconnect({ url: config.targetUrl, numSockets: 1 });
     await windowManager.createMainWindow(config);
   };
 
@@ -587,6 +579,7 @@ async function quitApplication(): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   await app.whenReady();
+  const readyAt = performance.now();
 
   const capabilities = await detectPlatformCapabilities({
     displays: { count: screen.getAllDisplays().length },
@@ -627,6 +620,13 @@ async function bootstrap(): Promise<void> {
       console.error(`[uni-shell] 日志写入失败（${event}）`, error);
     },
   });
+  const reportStartupTiming = (stage: 'ready' | 'configLoaded' | 'proxyApplied' | 'windowCreated' | 'firstLoad') => {
+    logger.info('startup-timing', {
+      stage,
+      elapsedMs: stage === 'ready' ? 0 : Math.round(performance.now() - readyAt),
+    });
+  };
+  reportStartupTiming('ready');
 
   // 应用图标（规格 §5.4）：启动前解析用户图标或内置默认图标；缺失/损坏回退并记日志。
   const appIcon = await resolveAppIcon(paths, initialConfig?.appearance.icon, logger);
@@ -638,6 +638,13 @@ async function bootstrap(): Promise<void> {
     app.dock?.setIcon(windowIcon);
   }
 
+  let iconCleanupScheduled = false;
+  let firstLoadRecorded = false;
+  const reportFirstLoad = () => {
+    if (firstLoadRecorded) return;
+    firstLoadRecorded = true;
+    reportStartupTiming('firstLoad');
+  };
   const windowManager = new WindowManager({
     createWindow: createBrowserWindowFactory(() => windowIcon),
     capabilities,
@@ -651,11 +658,26 @@ async function bootstrap(): Promise<void> {
     onEvent: (event) => {
       activeController?.reportWindowEvent(event);
       if (event.type === 'main-window-created') {
+        reportStartupTiming('windowCreated');
+        if (!iconCleanupScheduled) {
+          iconCleanupScheduled = true;
+          setImmediate(() => {
+            void removeUnreferencedIconFiles({
+              configDirectory: paths.writeDirectory,
+              configuredIcon: appIcon.fileName ?? '',
+              fs: iconFileSystem,
+            }).then((removed) => {
+              if (removed.length > 0) logger.info('icon-files-cleaned', { removed });
+            }).catch((error: unknown) => {
+              logger.warn('icon-cleanup-failed', { message: error instanceof Error ? error.message : String(error) });
+            });
+          });
+        }
         const main = windowManager.getMainWindow();
         if (main !== null) {
           mainWindowChannel.emitReady(main);
           main.on('closed', () => mainWindowChannel.set(null));
-          attachMainWindowDiagnostics(main);
+          attachMainWindowDiagnostics(main, reportFirstLoad);
         }
       }
     },
@@ -684,6 +706,7 @@ async function bootstrap(): Promise<void> {
     shortcutTarget: createShortcutTarget(),
     proxy: createElectronProxyPort(),
     powerMonitor: createElectronPowerMonitorPort(),
+    startupTiming: reportStartupTiming,
     log: logger,
   });
 

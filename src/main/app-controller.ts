@@ -118,6 +118,8 @@ export interface AppControllerDeps {
   /** 电源监听端口；提供时记录休眠/唤醒诊断并在唤醒后重载页面（规格 §14.1）。 */
   powerMonitor?: PowerMonitorPort;
   singleInstance?: SingleInstanceHandle;
+  /** 主进程提供的启动阶段计时记录器。 */
+  startupTiming?: (stage: 'configLoaded' | 'proxyApplied') => void;
   /** 可注入随机源（返回值 ∈ [0, 1]），用于测试重试退避抖动。 */
   retryRandom?: () => number;
   log?: Logger;
@@ -237,6 +239,7 @@ export class AppController {
     this.subscribePowerMonitor();
 
     const result = await this.deps.configService.load();
+    this.deps.startupTiming?.('configLoaded');
 
     if (result.status !== 'loaded' || !result.config) {
       // 规格 §5.3：文件不存在、JSON 错误、字段错误或网址无效时打开配置界面。
@@ -256,11 +259,12 @@ export class AppController {
       retryIntervalSec: result.config.network.retryIntervalSec,
     });
 
+    void this.ensureOpenAtLogin();
     this.createTray();
-    await this.ensureOpenAtLogin();
     this.installShortcut();
     // 代理必须先于目标页面加载生效（规格 §7）。
     await this.applyProxyConfig(result.config.network);
+    this.deps.startupTiming?.('proxyApplied');
     this.startRetryController();
     await this.applyStartupStrategy();
   }

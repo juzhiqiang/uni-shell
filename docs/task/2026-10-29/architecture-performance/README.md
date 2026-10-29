@@ -18,7 +18,7 @@
 | 17 | 已完成 | Antigravity | 16 | [远程/本地会话分区与 SessionPolicy](17-session-partition.md) | A1（P0） | 是（已确认方案 A，§11/§14.1 已更新） |
 | 18 | 已完成 | Antigravity | 无 | [shared 契约与依赖方向门禁](18-shared-contract-dependency-rules.md) | A4 | 否（需同步 `rules/architecture.md`） |
 | 19 | 已完成 | Antigravity | 18 | [ConfigService 单一权威配置](19-config-service.md) | A3 | 否 |
-| 20 | 待开始 | 待指派 | 14、15、19 | [启动关键路径优化](20-startup-critical-path.md) | P1 | 否 |
+| 20 | 已完成 | Codex | 14、15、19 | [启动关键路径优化](20-startup-critical-path.md) | P1 | 否 |
 | 21 | 待开始 | 待指派 | 15、17、20 | [拆分 main.ts 平台适配器](21-split-main-composition-root.md) | A2 | 否 |
 | 22 | 已阻塞 | 待指派 | 19、21 | [配置保存热更新分级](22-config-hot-apply.md) | A5 | 是（§5.2/§14.1） |
 | 23 | 已完成 | Fable 5 | 无 | [日志写入流化与批量刷新](23-logger-write-stream.md) | P3 | 否 |
