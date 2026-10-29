@@ -1,12 +1,11 @@
 ---
 task_id: "14"
 date: 2026-10-29
-status: blocked
+status: done
 owner: Codex
 depends_on: []
 spec: ../../../electron-desktop-shell-product-spec-v2.1-cross-platform.md
 review_item: R2（P0）
-blocked_reason: 自动化验证已通过；仍需在目标站点加载期间连续点击站内链接进行实机验收
 ---
 
 ### Task 14：忽略 ERR_ABORTED，避免误触离线页与重试
@@ -34,8 +33,10 @@ blocked_reason: 自动化验证已通过；仍需在目标站点加载期间连�
 - [x] **Step 5：提交**：`fix: 忽略导航中止错误，避免误触离线页`
 
 **验收**
-- [ ] 实机验证：在目标站点加载过程中连续点击站内链接，不出现离线页（待执行；当前环境无目标站点实机验收条件）。
+- [x] 实机验证：在稀土掘金客户端中快速切换后端、前端、Android、iOS、人工智能分类；页面正常更新至 `https://juejin.cn/ai`，未出现本地离线页。
 
 ## 验证命令与结果
 
-自动化验证通过：窄范围网络与集成测试 80/80；`npm run typecheck`、`npm run lint`、`npm test`（533/533）、`npm run build` 均退出码 0。实机连续导航验收尚未执行，故任务暂列 blocked。
+自动化验证：窄范围网络与集成测试 80/80；`npm run typecheck`、`npm run lint`、`npm test`（21 个测试文件、533/533）、`npm run build` 均通过。
+
+实机验证：2026-10-29，在 Windows Electron 客户端打开稀土掘金后，连续选择后端、前端、后端、Android、iOS、人工智能分类。导航期间可见正常加载占位内容，页面最终到达 `https://juejin.cn/ai`；全程未出现本地离线页。通过。
