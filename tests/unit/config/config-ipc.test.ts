@@ -10,7 +10,7 @@ import {
 import { loadConfig, saveConfig, type ConfigFileSystem } from '../../../src/main/config/config-store';
 import type { AppConfig, NetworkConfig } from '../../../src/main/config/config-types';
 import type { ResolvedConfigPaths } from '../../../src/main/platform/config-paths';
-import { CONFIG_IPC_CHANNELS } from '../../../src/preload/config-bridge';
+import { CONFIG_IPC_CHANNELS } from '../../../src/shared/ipc-contract';
 
 /**
  * 配置界面 IPC 主进程侧测试。

@@ -5,15 +5,13 @@ import type { ConfigLoadResult } from '../../src/main/config/config-store';
 import {
   AppController,
   type AppControllerDeps,
-  type TrayActions,
-  type TrayPort,
   type WindowPort,
 } from '../../src/main/app-controller';
 import { resolveConfigPaths, type ResolvedConfigPaths } from '../../src/main/platform/config-paths';
 import type { PlatformCapabilities } from '../../src/main/platform/platform-adapter';
 import { LOGIN_LAUNCH_FLAG } from '../../src/main/instance/single-instance';
 import type { LoginItemPort } from '../../src/main/startup/startup-manager';
-import type { ShortcutTarget } from '../../src/main/tray/tray-manager';
+import type { ShortcutTarget, TrayActions, TrayPort } from '../../src/main/tray/tray-manager';
 
 /**
  * 覆盖规格 v2.1 §9/§10 的端到端启动流程：

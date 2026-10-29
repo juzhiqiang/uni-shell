@@ -4,8 +4,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ConfigurationApp } from '../../../src/renderer/config/App';
-import type { ConfigBridge } from '../../../src/preload/config-bridge';
-import type { AppConfig } from '../../../src/main/config/config-types';
+import type { ConfigBridge } from '../../../src/shared/ipc-contract';
+import type { AppConfig } from '../../../src/shared/config-types';
 
 /**
  * 本地配置界面测试。

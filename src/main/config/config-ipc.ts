@@ -16,7 +16,7 @@ import type { AppConfig, NetworkConfig } from './config-types';
 import { createDefaultConfig, validateConfig, type ValidationIssue } from './config-schema';
 import type { ConfigFileSystem, ConfigLoadResult, SaveConfigOptions } from './config-store';
 import type { ResolvedConfigPaths } from '../platform/config-paths';
-import type { Logger } from '../app-controller';
+import type { Logger } from '../logging/logger';
 import {
   CONFIG_IPC_CHANNELS,
   isConfigIpcChannel,
@@ -24,7 +24,7 @@ import {
   type ConnectionResult,
   type IconPickResult,
   type SaveResult,
-} from '../../preload/config-bridge';
+} from '../../shared/ipc-contract';
 
 /** `ipcMain` 的最小读取面；测试注入内存实现。 */
 export interface ConfigIpcHost {

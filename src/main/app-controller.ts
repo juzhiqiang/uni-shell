@@ -55,13 +55,6 @@ export type AppState =
   | 'shutting-down'
   | 'stopped';
 
-/*
- * 日志契约的权威实现见 `src/main/logging/logger.ts`（Task 9）。
- * 此处再导出是为了保持编排层的公共 API 稳定：config-ipc 等模块
- * 一直从本模块导入 `Logger` 类型。
- */
-export type { Logger };
-
 /** 代理应用端口；生产环境经 Electron session 注入（Task 5 的 applyProxy）。 */
 export interface ProxyPort {
   apply(config: NetworkConfig): Promise<ProxyApplyResult>;
@@ -149,16 +142,6 @@ function summarizeCapabilities(capabilities: PlatformCapabilities): Record<strin
     displays: capabilities.displaySelection.count,
   };
 }
-
-/*
- * 以下再导出一侧是为了保持编排层的公共 API 稳定：启动策略与托盘契约的权威实现
- * 已移至 startup-manager / tray-manager（平台实现不得反向依赖 app-controller，
- * 因此判定逻辑不能留在这里），此处仅转发。
- */
-export { shouldApplyDelay, clampDelaySec } from './startup/startup-manager';
-export type { LaunchContext } from './instance/single-instance';
-export type { CancelableDelay } from './startup/startup-manager';
-export type { TrayActions, TrayPort, TrayResult } from './tray/tray-manager';
 
 /** 默认延迟端口：直接采用 startup-manager 的实现。 */
 export function createDefaultDelayPort(): DelayPort {

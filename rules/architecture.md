@@ -2,6 +2,7 @@
 
 ## 分层职责
 
+- `src/shared/`：主进程、preload 与 renderer 共享的契约与纯类型（IPC 通道表、白名单判断、配置结构类型、调用结果契约）；不得导入 Electron 或 Node 内置模块。
 - `src/main/`：Electron 主进程应用服务，负责生命周期和系统能力编排。
 - `src/main/platform/`：操作系统、桌面环境和能力探测；禁止承载业务页面逻辑。
 - `src/main/config/`：配置类型、校验、迁移、路径和持久化。
@@ -15,6 +16,10 @@
 
 ## 依赖方向
 
+- `src/shared/` 为各层共享契约与纯类型，保持环境无关，不得导入 `electron` 或 `node:*`。
+- `src/renderer/**` 不得导入 `src/main/**` 或 `src/preload/**`（即使 `import type` 也禁止，统一走 `src/shared/`）。
+- `src/main/**`（除 `src/main.ts` 外）不得导入 `src/preload/**`；主进程与 preload 的 IPC 契约由 `src/shared/` 统一维护。
+- `src/main/platform/**`、`startup/**`、`tray/**`、`config/**` 不得反向依赖编排层 `app-controller`。
 - 配置 schema 和纯状态模块不得依赖 Electron DOM、renderer 或具体 OS API。
 - 主进程可以依赖纯逻辑和平台接口；平台实现不得反向依赖 `app-controller`。
 - renderer 只能通过 preload 暴露的、类型化的白名单接口请求操作。

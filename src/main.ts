@@ -19,7 +19,6 @@ import {
 
 import {
   AppController,
-  type Logger,
   type PowerMonitorPort,
   type ProxyPort,
   type WindowPort,
@@ -37,7 +36,7 @@ import { registerConfigIpc, testTargetConnection } from './main/config/config-ip
 import { loadConfig, saveConfig } from './main/config/config-store';
 import type { AppConfig } from './main/config/config-schema';
 import type { LogLevel, NetworkConfig } from './main/config/config-types';
-import { createLogger } from './main/logging/logger';
+import { createLogger, type Logger } from './main/logging/logger';
 import {
   CONFIG_FILE_NAME,
   resolveConfigPaths,

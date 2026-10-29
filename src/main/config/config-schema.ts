@@ -14,21 +14,14 @@ import {
   type InitialState,
   type LogLevel,
   type ProxyMode,
+  type ValidationIssue,
+  type ValidationResult,
   type WindowCloseAction,
   type WindowMode,
-} from './config-types';
+} from '../../shared/config-types';
 
 export { CONFIG_SCHEMA_VERSION };
-export type { AppConfig } from './config-types';
-
-export interface ValidationIssue {
-  /** 点号路径，根级字段为空字符串。 */
-  path: string;
-  message: string;
-  code: string;
-}
-
-export type ValidationResult<T> = { ok: true; value: T } | { ok: false; issues: ValidationIssue[] };
+export type { AppConfig, ValidationIssue, ValidationResult };
 
 /** 校验或迁移失败时抛出，携带可供配置界面直接展示的 issues。 */
 export class ConfigValidationError extends Error {

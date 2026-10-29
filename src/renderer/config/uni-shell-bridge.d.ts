@@ -1,4 +1,4 @@
-import type { ConfigBridge } from '../../preload/config-bridge';
+import type { ConfigBridge } from '../../shared/ipc-contract';
 
 declare global {
   interface Window {

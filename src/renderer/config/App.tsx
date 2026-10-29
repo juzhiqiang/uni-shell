@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 
-import type { SaveResult } from '../../preload/config-bridge';
-import type { ValidationIssue, ValidationResult } from '../../main/config/config-schema';
+import type { SaveResult } from '../../shared/ipc-contract';
 import type {
   AlwaysOnTopLevel,
   AppConfig,
@@ -9,9 +8,11 @@ import type {
   LogLevel,
   NetworkConfig,
   ProxyMode,
+  ValidationIssue,
+  ValidationResult,
   WindowCloseAction,
   WindowMode,
-} from '../../main/config/config-types';
+} from '../../shared/config-types';
 
 /**
  * 本地配置界面。
