@@ -666,6 +666,13 @@ describe('渲染进程崩溃与无响应恢复（规格 §7、§12）', () => {
       vi.advanceTimersByTime(120_000);
       expect(fakeWindow.calls).not.toContain('reloadMain');
 
+      // 旧崩溃记录滑出窗口也不复活自动重载：降级要保持到用户干预或加载成功。
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 4 });
+      await settleLog();
+      expect(logData(memory, 'renderer-gone-ignored')).toMatchObject({ recovery: 'stopped' });
+      vi.advanceTimersByTime(120_000);
+      expect(fakeWindow.calls).not.toContain('reloadMain');
+
       await controller.shutdown();
     } finally {
       vi.useRealTimers();

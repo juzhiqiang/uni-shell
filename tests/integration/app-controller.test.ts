@@ -836,6 +836,60 @@ describe('AppController 渲染进程崩溃与无响应恢复', () => {
     }
   });
 
+  it('达到阈值后即使超出崩溃窗口也不再自动重载', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fakeWindow, logs } = createDeps({ loadConfig: async () => loadedResult(crashConfig(5)) });
+      const controller = new AppController(deps);
+      await controller.start(START);
+
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
+      vi.advanceTimersByTime(5_000);
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
+      vi.advanceTimersByTime(5_000);
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
+      expect(fakeWindow.calls).toContain('showOfflinePage');
+      const reloads = fakeWindow.calls.filter((call) => call === 'reloadMain').length;
+
+      // 旧崩溃记录已滑出窗口，但降级状态必须保持到用户干预或加载成功。
+      vi.advanceTimersByTime(120_000);
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
+      vi.advanceTimersByTime(120_000);
+
+      expect(fakeWindow.calls.filter((call) => call === 'reloadMain')).toHaveLength(reloads);
+      expect(logs.map((entry) => entry.event)).toContain('renderer-gone-ignored');
+      expect(logs.find((entry) => entry.event === 'renderer-gone-ignored')).toMatchObject({
+        data: { recovery: 'stopped' },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('加载成功后恢复自动重载资格', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fakeWindow } = createDeps({ loadConfig: async () => loadedResult(crashConfig(5)) });
+      const controller = new AppController(deps);
+      await controller.start(START);
+
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
+      vi.advanceTimersByTime(5_000);
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
+      vi.advanceTimersByTime(5_000);
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
+      expect(fakeWindow.calls).toContain('showOfflinePage');
+
+      controller.reportLoadSuccess();
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
+      vi.advanceTimersByTime(5_000);
+
+      expect(fakeWindow.calls.filter((call) => call === 'reloadMain')).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('clean-exit 属于预期退出，不触发自动重载', async () => {
     vi.useFakeTimers();
     try {
@@ -939,7 +993,8 @@ describe('AppController 渲染进程崩溃与无响应恢复', () => {
       controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
       vi.advanceTimersByTime(5_000);
 
-      expect(fakeWindow.calls).toContain('reloadMain');
+      // 计数断言：托盘重载 1 次 + 崩溃重载 1 次；只写 toContain 会因托盘那次恒真。
+      expect(fakeWindow.calls.filter((call) => call === 'reloadMain')).toHaveLength(2);
       expect(fakeWindow.calls).not.toContain('showOfflinePage');
     } finally {
       vi.useRealTimers();
@@ -1046,6 +1101,37 @@ describe('AppController 渲染进程崩溃与无响应恢复', () => {
 
       expect(fakeWindow.calls).not.toContain('forcefullyCrashRenderer');
       expect(logs.map((entry) => entry.event)).toContain('renderer-responsive');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('恢复响应是无条件必记项，即使没有挂起的强制结束', async () => {
+    const { deps, logs } = createDeps({ loadConfig: async () => loadedResult(crashConfig(5)) });
+    const controller = new AppController(deps);
+    await controller.start(START);
+
+    controller.reportResponsive();
+
+    expect(logs.find((entry) => entry.event === 'renderer-responsive')).toMatchObject({
+      data: { cancelledForceCrash: false },
+    });
+  });
+
+  it('关闭后收到的进程事件不再安排定时器', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fakeWindow } = createDeps({ loadConfig: async () => loadedResult(crashConfig(5)) });
+      const controller = new AppController(deps);
+      await controller.start(START);
+
+      await controller.shutdown();
+      controller.reportRendererGone({ reason: 'crashed', exitCode: 1 });
+      controller.reportUnresponsive();
+      vi.advanceTimersByTime(120_000);
+
+      expect(fakeWindow.calls).not.toContain('reloadMain');
+      expect(fakeWindow.calls).not.toContain('forcefullyCrashRenderer');
     } finally {
       vi.useRealTimers();
     }

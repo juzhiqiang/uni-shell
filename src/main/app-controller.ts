@@ -182,6 +182,8 @@ export class AppController {
   private loadFailures = 0;
   /** 崩溃窗口内的渲染进程崩溃时间戳（规格 §7 的 60 秒 / 3 次判定）。 */
   private crashHistory: number[] = [];
+  /** 已降级为离线页：自动重载保持停止，直到用户手动重载或加载成功（规格 §7）。 */
+  private crashRecoveryStopped = false;
   private crashReloadTimer: ReturnType<typeof setTimeout> | undefined;
   private unresponsiveTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -349,8 +351,9 @@ export class AppController {
 
   private async reloadMain(): Promise<void> {
     // 用户显式触发（托盘「重新加载网页」、唤醒恢复）即恢复自动重载资格：
-    // 清空崩溃窗口与挂起的崩溃重载，重新获得完整配额（规格 §7）。
+    // 清空崩溃窗口与降级状态，重新获得完整配额（规格 §7）。
     this.crashHistory = [];
+    this.crashRecoveryStopped = false;
     this.clearCrashReloadTimer();
     await this.deps.window.reloadMain();
   }
@@ -495,8 +498,9 @@ export class AppController {
     const log = this.deps.log ?? noopLogger;
     const recovered = this.loadFailures > 0;
     this.loadFailures = 0;
-    // 页面能正常加载说明进程级故障已恢复，崩溃窗口重新累计（规格 §7）。
+    // 页面能正常加载说明进程级故障已恢复，崩溃窗口与降级状态重新累计（规格 §7）。
     this.crashHistory = [];
+    this.crashRecoveryStopped = false;
     log.info('page-load-succeeded', { recovered });
     this.retryController?.onLoadSucceeded();
   }
@@ -511,10 +515,25 @@ export class AppController {
    */
   reportRendererGone(details: { reason: string; exitCode: number }): void {
     const log = this.deps.log ?? noopLogger;
+
+    // 关闭流程已开始时不再安排任何恢复动作（定时器同样不再新建）。
+    if (this.state === 'shutting-down' || this.state === 'stopped') return;
+
     log.warn('renderer-gone', { reason: details.reason, exitCode: details.exitCode });
 
     if (!isRecoverableRendererExit(details.reason)) {
-      log.info('renderer-gone-ignored', { reason: details.reason });
+      log.info('renderer-gone-ignored', { reason: details.reason, exitCode: details.exitCode });
+      return;
+    }
+
+    // 已降级：规格 §7 只允许「用户从托盘手动重载」或「加载成功」恢复自动重载，
+    // 崩溃记录滑出窗口不构成恢复条件，否则会自动复活。
+    if (this.crashRecoveryStopped) {
+      log.info('renderer-gone-ignored', {
+        reason: details.reason,
+        exitCode: details.exitCode,
+        recovery: 'stopped',
+      });
       return;
     }
 
@@ -526,6 +545,7 @@ export class AppController {
     this.crashHistory = decision.history;
 
     if (decision.action === 'offline') {
+      this.crashRecoveryStopped = true;
       log.error('renderer-crash-limit', {
         crashes: this.crashHistory.length,
         windowMs: DEFAULT_CRASH_WINDOW_MS,
@@ -534,7 +554,10 @@ export class AppController {
       this.clearCrashReloadTimer();
       if (config.network.offlinePageEnabled) {
         log.info('offline-page-shown');
-        void this.deps.window.showOfflinePage?.();
+        // 离线页展示失败不阻塞降级状态：窗口已停在崩溃页，日志留痕即可。
+        void Promise.resolve(this.deps.window.showOfflinePage?.()).catch((error) => {
+          log.error('offline-page-failed', { message: describeError(error) });
+        });
       }
       return;
     }
@@ -556,6 +579,8 @@ export class AppController {
    */
   reportUnresponsive(): void {
     const log = this.deps.log ?? noopLogger;
+    if (this.state === 'shutting-down' || this.state === 'stopped') return;
+
     log.warn('renderer-unresponsive', { forceCrashInSec: UNRESPONSIVE_CRASH_DELAY_MS / 1000 });
 
     this.clearUnresponsiveTimer();
@@ -568,12 +593,18 @@ export class AppController {
     }, UNRESPONSIVE_CRASH_DELAY_MS);
   }
 
-  /** 渲染进程恢复响应：取消挂起的强制结束，页面无需重载。 */
+  /**
+   * 渲染进程恢复响应。
+   *
+   * 规格 §12 把「恢复响应」列为必记项，因此无条件记录；`cancelledForceCrash`
+   * 区分是否真的取消了一次挂起的强制结束。
+   */
   reportResponsive(): void {
-    if (!this.unresponsiveTimer) return;
+    const log = this.deps.log ?? noopLogger;
+    const cancelledForceCrash = this.unresponsiveTimer !== undefined;
 
     this.clearUnresponsiveTimer();
-    (this.deps.log ?? noopLogger).info('renderer-responsive');
+    log.info('renderer-responsive', { cancelledForceCrash });
   }
 
   /**
@@ -588,7 +619,12 @@ export class AppController {
       this.crashReloadTimer = undefined;
       if (this.state === 'shutting-down' || this.state === 'stopped') return;
 
-      void this.deps.window.reloadMain();
+      const log = this.deps.log ?? noopLogger;
+      // 崩溃重载不重置崩溃窗口：连续崩溃仍应累计到阈值。窗口已销毁时
+      // loadURL 会 reject，这里只留痕，不影响后续崩溃计数。
+      this.deps.window.reloadMain().catch((error) => {
+        log.error('crash-reload-failed', { message: describeError(error) });
+      });
     }, retryIntervalSec * 1000);
   }
 

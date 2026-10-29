@@ -415,9 +415,23 @@ function createBrowserWindowFactory(getWindowIcon: () => Electron.NativeImage | 
 }
 
 /**
+ * 本地离线页判定：离线页加载成功不算「目标页恢复」。
+ *
+ * 生产环境离线页是 `loadFile`（file://）；开发模式走 Vite dev server
+ * （http://localhost:PORT/offline.html）。两者都会触发 `did-navigate`，
+ * 若不排除，降级后的离线页会被当成目标页加载成功，从而清空崩溃窗口、
+ * 取消重试，规格 §7 的「停止自动重载」在 `npm run dev` 下被静默破坏。
+ */
+function isLocalOfflinePage(url: string): boolean {
+  if (url.startsWith('file:')) return true;
+  if (!isLocalDevelopmentUrl(url)) return false;
+  return new URL(url).pathname.endsWith('/offline.html');
+}
+
+/**
  * 主窗口加载诊断（规格 §12 的页面加载结果、§14.1 的断网恢复、§7 的进程级恢复）：
  * - `did-fail-load` 进入控制器的失败分类与重试控制；
- * - `did-navigate` 在主框架导航成功时触发且带 URL，本地离线页（file://）不算恢复；
+ * - `did-navigate` 在主框架导航成功时触发且带 URL，本地离线页不算恢复；
  * - `render-process-gone` / `unresponsive` / `responsive` 交给控制器的崩溃窗口：
  *   崩溃不产生 `did-fail-load`，重试控制器不会被触发，必须由进程级事件驱动恢复。
  */
@@ -429,7 +443,7 @@ function attachMainWindowDiagnostics(window: BrowserWindow): void {
     },
   );
   window.webContents.on('did-navigate', (_event, url) => {
-    if (url.startsWith('file:')) return;
+    if (isLocalOfflinePage(url)) return;
     activeController?.reportLoadSuccess();
   });
   window.webContents.on('render-process-gone', (_event, details) => {
@@ -502,6 +516,10 @@ function createWindowPortAdapter(
     forcefullyCrashRenderer() {
       // 规格 §7：无响应渲染进程由控制器判定后强制结束；随后 render-process-gone
       // 会接手，按崩溃窗口决定自动重载或离线页降级。窗口不存在时无需处理。
+      //
+      // 前提：主窗口与配置窗口必须处于不同 session/partition。Electron 明确警告
+      // 共享渲染进程的 webContents 会被同时 crash；当前远程页用 persist:remote、
+      // 配置页用 local-config，互不影响。若将来合并分区，这里要重新评估。
       windowManager.getMainWindow()?.webContents.forcefullyCrashRenderer();
     },
 
@@ -683,8 +701,9 @@ async function bootstrap(): Promise<void> {
     void controller.shutdown();
   });
 
-  // 规格 §12：子进程（GPU、网络服务等）异常退出只记录诊断，不参与页面恢复；
-  // 渲染进程由 webContents 的 render-process-gone 处理，不在这里重复计数。
+  // 规格 §12：子进程（GPU、网络服务等）异常退出只记录诊断，不参与页面恢复。
+  // 该事件本身不包含渲染进程（Electron 45 语义），渲染进程由 webContents 的
+  // render-process-gone 处理，两条链路天然不重叠。
   app.on('child-process-gone', (_event, details) => {
     const payload = {
       type: details.type,

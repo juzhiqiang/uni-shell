@@ -56,16 +56,29 @@ spec_change: 是（§7 恢复、§12 诊断补充渲染进程崩溃条目）
 |---|---|
 | `npm run typecheck` | 通过（`tsc --noEmit` 两个 project 均无输出） |
 | `npm run lint` | 本任务文件 0 error（`eslint src/main/network/crash-guard.ts src/main/app-controller.ts src/main.ts tests/unit/network/crash-guard.test.ts tests/integration/app-controller.test.ts tests/integration/recovery-flow.test.ts`）。全量 `npm run lint` 存在 1 个 error，位于他人在途文件 `tests/unit/window/session-policy.test.ts`（任务 17，`vi` 未使用），不属于本任务文件范围 |
-| `npm test` | 通过：24 个测试文件、606 项全过（本任务新增 18 + 15 + 4 = 37 项） |
-| `npm run build` | 通过（沙箱需先 `rm -rf dist` 再构建，vite `emptyOutDir` 走 `unlinkSync` 触发 EPERM）；产物 main 78.20 kB / preload 0.72 kB / renderer 207.86 kB，`renderer-gone`、`renderer-unresponsive`、`renderer-crash-limit`、`child-process-gone`、`forcefullyCrashRenderer` 均已在 `dist/main/index.cjs` 中 |
+| `npm test` | 通过：24 个测试文件、610 项全过（本任务新增 18 + 21 + 5 = 44 项） |
+| `npm run build` | 通过（沙箱需先 `rm -rf dist` 再构建，vite `emptyOutDir` 走 `unlinkSync` 触发 EPERM）；产物 main/preload/renderer 均正常产出，`renderer-gone`、`renderer-unresponsive`、`renderer-crash-limit`、`child-process-gone`、`forcefullyCrashRenderer` 均已在 `dist/main/index.cjs` 中 |
 
 补充说明：
 
 - 全量 `npm test` 首次运行时有 4 项失败，全部来自任务 17 正在编辑的 `tests/integration/window-manager.test.ts` 中间态；待其落盘后复跑全绿。本任务测试单独运行始终全绿。
 - `npm test` 覆盖了 Step 1 与 Step 3 要求的全部场景；实机验收（任务管理器结束渲染进程）沙箱无法执行，记录在下方遗留事项。
 
+## 代码审查与修正（2026-10-30，独立代理审查）
+
+审查发现 3 个需处理问题、9 条建议，处理如下：
+
+1. **崩溃窗口不是锁存器（已修）**：原实现中旧崩溃记录滑出 60 秒窗口后，第 4 次崩溃会重新拿到配额并复活自动重载，与规格「直到用户从托盘手动重载或加载成功后恢复」不符。已在控制器加 `crashRecoveryStopped` 锁存位，仅 `reloadMain()`（用户显式触发）与 `reportLoadSuccess()` 清除；新增用例覆盖「超出窗口后仍不自动重载」与「加载成功后恢复资格」。
+2. **开发模式离线页清空崩溃窗口（已修）**：`loadOfflinePage` 在 dev 下走 `http://localhost:PORT/offline.html`，会触发 `did-navigate` → `reportLoadSuccess()`，把降级状态清掉。已在 `main.ts` 增加 `isLocalOfflinePage()`（file:// 或本地开发服务器上的 `/offline.html`），离线页不计入目标页加载成功。该修复同时惠及既有重试控制（dev 下离线页原先也会取消重试）。
+3. **`offlinePageEnabled=false` 且达到阈值（用户决策：维持停止重载）**：保持规格字面行为——不展示离线页、停止自动重载，仅保留托盘「重新加载网页」入口。已在规格 §7 显式写明该组合，避免后续误当作缺陷「修好」。
+
+其余建议已采纳：`reportRendererGone` / `reportUnresponsive` 增加关闭态入口守卫；即发即弃的 `showOfflinePage` / 崩溃重载补 `.catch()` 记日志；`renderer-responsive` 改为无条件必记并带 `cancelledForceCrash` 字段；修正 `child-process-gone` 注释里「不重复计数」的错误因果（该事件本就不含渲染进程）；为 `forcefullyCrashRenderer` 补共享渲染进程风险的前提注释；把托盘重载那条用例的空转断言改为计数断言。
+
+未采纳（记录备查）：把 `child-process-gone` 监听提前到 `app.whenReady()` 之后（任务文件约定只改 `bootstrap` 末尾，避免与任务 17/20/21 的 main.ts 所有权冲突）；为 `src/main.ts` 接线补单测（全仓无测试 import main.ts，拆分属任务 21 范围）。
+
 ## 遗留事项
 
 - **实机验收未执行**：规格 §14.1 要求用任务管理器结束渲染进程验证自动恢复与 3 次降级，沙箱无真实桌面，待真实系统确认。
 - `src/main.ts` 与 `src/main/app-controller.ts` 为多任务共享文件（任务 15/17/20/21、15/19/20/24）；本任务只改 `attachMainWindowDiagnostics`、`bootstrap` 末尾的 `child-process-gone` 监听与窗口端口的 `forcefullyCrashRenderer`，未触碰他人在途改动。
+- 首次提交 `b5382e6` 后，任务 17 的提交 `9e11a00` 将本任务对 `src/main.ts` 与产品规格的修改一并带入（共享分支 + 无 pathspec 提交的已知风险）；本任务后续对这两个文件的修正单独成提交。
 
