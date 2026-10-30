@@ -65,7 +65,7 @@
 | 模块拆分、接口设计、跨模块依赖或状态流调整 | `rules/architecture.md` |
 | 配置路径、自启、托盘、窗口层级、打包或操作系统差异 | `rules/platform.md` |
 | 远程页面、preload、IPC、权限、导航或敏感数据 | `rules/security.md` |
-| 测试、构建、签名、发布产物或验收 | `rules/testing-release.md` |
+| 测试、构建、签名、发布产物、版本号或验收 | `rules/testing-release.md` |
 | 代码审查、重构或质量门禁 | `rules/code-review.md` |
 | 多种类型同时涉及 | 读取所有对应规则 |
 | 简单文案、注释或局部配置修改 | 只读取相关文件和配置 |
