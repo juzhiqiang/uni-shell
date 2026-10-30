@@ -112,3 +112,4 @@ export const shell = {
 };
 
 export default 'electron';
+
