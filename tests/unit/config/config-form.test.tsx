@@ -90,6 +90,7 @@ function installBridge(overrides: Partial<ConfigBridge> = {}): BridgeMock {
     validateConfig: vi.fn(async (input: unknown) => ({ ok: true as const, value: input as AppConfig })),
     saveConfig: vi.fn(async () => ({
       ok: true,
+      applied: 'restart',
       configPath: DEFAULT_CONFIG_PATH,
       requiresRestart: true,
     })),
@@ -389,6 +390,7 @@ describe('保存流程', () => {
     const bridge = installBridge({
       saveConfig: vi.fn(async () => ({
         ok: true,
+        applied: 'restart',
         configPath: '/data/uni-shell/config.json',
         requiresRestart: true,
       })),
@@ -402,7 +404,7 @@ describe('保存流程', () => {
     const saved = bridge.saveConfig.mock.calls[0][0] as { targetUrl: string; network: { retryIntervalSec: number } };
     expect(saved.targetUrl).toBe('https://erp2.example.com');
     expect(saved.network.retryIntervalSec).toBe(3);
-    expect(document.body.textContent).toContain('客户端正在重启');
+    expect(document.body.textContent).toContain('客户端即将重启');
     expect(document.body.textContent).toContain('/data/uni-shell/config.json');
   });
 

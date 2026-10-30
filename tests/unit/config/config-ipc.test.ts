@@ -227,13 +227,70 @@ describe('validateConfig 通道', () => {
 });
 
 describe('saveConfig 通道受控保存', () => {
+  it('热应用变更不关闭窗口或重启，并返回 hot', async () => {
+    const hot = vi.fn();
+    const harness = createHarness({
+      initial: { [PATHS.writePath]: storedConfig() },
+      overrides: { applyHot: hot },
+    });
+    registerConfigIpc(harness.deps);
+    await call(harness, CONFIG_IPC_CHANNELS.getConfig);
+    const next = JSON.parse(storedConfig({
+      window: { mode: 'fullscreen', alwaysOnTop: false, alwaysOnTopLevel: 'normal', display: 'primary', closeAction: 'hide' },
+    }));
+
+    const result = await call(harness, CONFIG_IPC_CHANNELS.saveConfig, next);
+
+    expect(result).toMatchObject({ ok: true, applied: 'hot', requiresRestart: false });
+    expect(hot).toHaveBeenCalledTimes(1);
+    expect(harness.calls).toEqual(['onSaved']);
+  });
+
+  it('targetUrl 變更只請求頁面重載', async () => {
+    const reload = vi.fn();
+    const harness = createHarness({
+      initial: { [PATHS.writePath]: storedConfig() },
+      overrides: { reload },
+    });
+    registerConfigIpc(harness.deps);
+    await call(harness, CONFIG_IPC_CHANNELS.getConfig);
+
+    const result = await call(harness, CONFIG_IPC_CHANNELS.saveConfig, validInput());
+
+    expect(result).toMatchObject({ ok: true, applied: 'reload', requiresRestart: false });
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(harness.calls).toEqual(['onSaved']);
+  });
+
+  it('运行时应用失败仍报告保存成功并返回应用告警', async () => {
+    const harness = createHarness({
+      initial: { [PATHS.writePath]: storedConfig() },
+      overrides: { applyHot: () => { throw new Error('策略应用失败'); } },
+    });
+    registerConfigIpc(harness.deps);
+    await call(harness, CONFIG_IPC_CHANNELS.getConfig);
+    const next = JSON.parse(storedConfig({
+      window: { mode: 'fullscreen', alwaysOnTop: false, alwaysOnTopLevel: 'normal', display: 'primary', closeAction: 'hide' },
+    }));
+
+    const result = await call(harness, CONFIG_IPC_CHANNELS.saveConfig, next) as {
+      ok: boolean;
+      applied?: string;
+      applyWarning?: string;
+    };
+
+    expect(result).toMatchObject({ ok: true, applied: 'hot', applyWarning: '策略应用失败' });
+    expect(harness.logger.warn).toHaveBeenCalledWith('config-apply-failed', expect.objectContaining({ applied: 'hot' }));
+    expect(JSON.parse(harness.files.get(PATHS.writePath) ?? '{}').window.mode).toBe('fullscreen');
+  });
+
   it('校验通过后原子写盘、记录日志并按顺序收尾与重启', async () => {
     const harness = createHarness({ initial: { [PATHS.writePath]: storedConfig() } });
     registerConfigIpc(harness.deps);
 
     const result = await call(harness, CONFIG_IPC_CHANNELS.saveConfig, validInput());
 
-    expect(result).toEqual({ ok: true, configPath: PATHS.writePath, requiresRestart: true });
+    expect(result).toEqual({ ok: true, configPath: PATHS.writePath, applied: 'restart', requiresRestart: true });
     const written = JSON.parse(harness.files.get(PATHS.writePath) ?? '{}') as { targetUrl: string };
     expect(written.targetUrl).toBe('https://erp2.example.com');
     // 旧配置被保留为备份，临时文件被清理。

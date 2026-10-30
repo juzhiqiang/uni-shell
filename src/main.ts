@@ -187,7 +187,7 @@ async function bootstrap(): Promise<void> {
     },
   });
 
-  const windowPort = createWindowPortAdapter({ windowManager, configService });
+  const windowPort = createWindowPortAdapter({ windowManager, configService, capabilities });
 
   let wasOnline = net.isOnline();
   const onlinePollTimer = setInterval(() => {
@@ -257,6 +257,8 @@ async function bootstrap(): Promise<void> {
         }
       })();
     },
+    reload: (config) => controller.applySavedConfig(config, true),
+    applyHot: (config) => controller.applySavedConfig(config, false),
     testConnection: (url, network) => testTargetConnection(url, network),
     pickIcon: createIconPickPort({
       getConfigWindow: () => windowManager.getConfigWindow(),

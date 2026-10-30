@@ -3,6 +3,7 @@ import type { WindowPort } from '../app-controller';
 import type { ConfigService } from '../config/config-service';
 import type { AppConfig } from '../config/config-schema';
 import type { BrowserWindowConstructorOptions } from './window-manager';
+import type { PlatformCapabilities } from '../platform/platform-adapter';
 import { REMOTE_PARTITION } from './session-policy';
 import { loadOfflinePage } from './page-loader';
 
@@ -41,6 +42,8 @@ export interface WindowPortManager<W = BrowserWindow> {
   getConfigWindow(): unknown | null;
   focusConfigWindow(): void;
   closeAll(): void;
+  applyWindowPolicy(config: AppConfig['window'], capabilities: PlatformCapabilities): void;
+  updateSecurity(security: AppConfig['security'], targetUrl?: string): void;
 }
 
 export interface ElectronSessionNetworkTarget {
@@ -50,6 +53,7 @@ export interface ElectronSessionNetworkTarget {
 
 export interface CreateWindowPortAdapterOptions<W extends MinimalMainWindowTarget = BrowserWindow> {
   windowManager: WindowPortManager<W>;
+  capabilities: PlatformCapabilities;
   configService: ConfigService;
   netOnline?: () => boolean;
   sessionProvider?: (partition: string) => ElectronSessionNetworkTarget;
@@ -85,6 +89,11 @@ export function createWindowPortAdapter<W extends MinimalMainWindowTarget = Brow
     },
 
     createMainWindow: createMain,
+
+    applyConfig(config: AppConfig) {
+      windowManager.applyWindowPolicy(config.window, options.capabilities);
+      windowManager.updateSecurity(config.security, config.targetUrl);
+    },
 
     async showAndFocusMain() {
       // 窗口已被销毁（如关闭后再次唤醒）时按最近配置重建；重建窗口可能按

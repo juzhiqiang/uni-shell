@@ -39,6 +39,10 @@ export function isConfigIpcChannel(channel: string): channel is ConfigIpcChannel
 /** 配置保存结果。 */
 export interface SaveResult {
   ok: boolean;
+  /** 配置保存后的生效方式。 */
+  applied?: 'hot' | 'reload' | 'restart';
+  /** 配置已写入，但运行时应用失败时的告警。 */
+  applyWarning?: string;
   /** 失败时的可操作错误信息。 */
   message?: string;
   /** 实际写入的配置文件路径，供界面展示。 */
