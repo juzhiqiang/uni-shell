@@ -63,6 +63,7 @@ export interface Logger {
   warn(event: string, data?: unknown): void;
   error(event: string, data?: unknown): void;
   debug?(event: string, data?: unknown): void;
+  setLevel?(level: LogLevel): void;
   /** 刷新挂起写入并释放资源；关闭后不再接受新事件。幂等，不会 reject。 */
   close(): Promise<void>;
 }
@@ -400,7 +401,7 @@ export function createLogger(options: LoggerOptions): Logger {
     ? options.directory
     : resolveLogDirectory({ platform: options.platform, env: options.env, homeDir: options.homeDir });
   const pathApi = options.platform === 'win32' ? win32 : posix;
-  const minOrder = LEVEL_ORDER[options.level ?? DEFAULT_LOG_LEVEL] ?? LEVEL_ORDER[DEFAULT_LOG_LEVEL];
+  let minOrder = LEVEL_ORDER[options.level ?? DEFAULT_LOG_LEVEL] ?? LEVEL_ORDER[DEFAULT_LOG_LEVEL];
   const pruneOnOpen = options.pruneOnOpen ?? true;
   const openStream = fs.openAppendStream?.bind(fs);
 
@@ -553,6 +554,9 @@ export function createLogger(options: LoggerOptions): Logger {
     warn: (event, data) => enqueue(event, 'warn', data),
     error: (event, data) => enqueue(event, 'error', data),
     debug: (event, data) => enqueue(event, 'debug', data),
+    setLevel(level) {
+      minOrder = LEVEL_ORDER[level] ?? LEVEL_ORDER[DEFAULT_LOG_LEVEL];
+    },
     close(): Promise<void> {
       closed = true;
       stopTimer();

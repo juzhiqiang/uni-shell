@@ -294,7 +294,7 @@ describe('托盘接入', () => {
 
     expect(fakeTray.calls).toContain('create');
     expect(fakeTray.created).toHaveLength(1);
-    expect(Object.keys(fakeTray.created[0]).sort()).toEqual(['openConfig', 'quit', 'reload', 'showWindow']);
+    expect(Object.keys(fakeTray.created[0]).sort()).toEqual(['configEnabled', 'openConfig', 'quit', 'reload', 'showWindow']);
   });
 
   it('四个动作分别触发对应窗口能力', async () => {

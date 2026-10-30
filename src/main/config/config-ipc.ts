@@ -15,6 +15,7 @@
 import type { AppConfig, NetworkConfig } from './config-types';
 import { createDefaultConfig, validateConfig, type ValidationIssue } from './config-schema';
 import type { ConfigService } from './config-service';
+import { classifyConfigChange } from './config-diff';
 import type { Logger } from '../logging/logger';
 import {
   CONFIG_IPC_CHANNELS,
@@ -42,6 +43,10 @@ export interface ConfigIpcDeps {
   closeStaleWindows?(): void;
   /** 受控重启（relaunch + exit）；仅在写入成功后调用。 */
   restart?(): void;
+  /** 页面重载分级保存完成后调用。 */
+  reload?(config: AppConfig, previous: AppConfig | undefined): Promise<void | string> | void | string;
+  /** 热应用分级保存完成后调用。 */
+  applyHot?(config: AppConfig, previous: AppConfig | undefined): Promise<void | string> | void | string;
   /** 连通性测试出口；缺省时使用本文件内置的 fetch 实现。 */
   testConnection?(url: string, network: NetworkConfig): Promise<ConnectionResult>;
   /** 图标选择出口（规格 §5.4）；由主进程用文件对话框 + icon-manager 注入。 */
@@ -121,11 +126,32 @@ export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
       deps.logger?.warn('config-save-side-effects-failed', { message: describeError(error) });
     }
 
-    // 规格 §14.1：写入成功后关闭陈旧窗口并受控重启；失败路径在上面已经返回。
-    deps.closeStaleWindows?.();
-    deps.restart?.();
+    const applied = classifyConfigChange(previous, validation.value).level;
+    let applyWarning: string | undefined;
+    if (applied === 'restart') {
+      deps.closeStaleWindows?.();
+      deps.restart?.();
+    } else {
+      try {
+        const warning = applied === 'reload'
+          ? await deps.reload?.(validation.value, previous)
+          : await deps.applyHot?.(validation.value, previous);
+        if (typeof warning === 'string') applyWarning = warning;
+      } catch (error) {
+        applyWarning = describeError(error);
+      }
+      if (applyWarning !== undefined) {
+        deps.logger?.warn('config-apply-failed', { applied, message: applyWarning });
+      }
+    }
 
-    return { ok: true, configPath: paths.writePath, requiresRestart: true };
+    return {
+      ok: true,
+      configPath: paths.writePath,
+      applied,
+      ...(applyWarning !== undefined ? { applyWarning } : {}),
+      requiresRestart: applied === 'restart',
+    };
   }
 
   async function handleResetConfig(): Promise<AppConfig> {

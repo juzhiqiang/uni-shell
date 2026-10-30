@@ -79,6 +79,7 @@ export interface WindowPort {
   hideMain(): Promise<void>;
   /** 重新加载目标网页（托盘「重新加载网页」、唤醒恢复）。 */
   reloadMain(): Promise<void>;
+  applyConfig?(config: AppConfig): void;
   /** 展示本地离线页（规格 §7 的 offlinePageEnabled）；未提供时不展示。 */
   showOfflinePage?(): Promise<void> | void;
   /** 后台探测目标网址是否可达（规格 §7：先 HEAD 探测再 loadURL）；未提供时直接重载。 */
@@ -191,6 +192,43 @@ export class AppController {
   private unresponsiveTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly deps: AppControllerDeps) {}
+
+  /** 保存后在当前进程应用无需重启的配置。 */
+  async applySavedConfig(config: AppConfig, reloadPage: boolean): Promise<string | undefined> {
+    const previous = this.config;
+    let warning: string | undefined;
+    this.config = config;
+    this.deps.window.applyConfig?.(config);
+    if (previous === undefined || previous.network.proxyMode !== config.network.proxyMode ||
+        JSON.stringify(previous.network) !== JSON.stringify(config.network)) {
+      const applied = await this.applyProxyConfig(config.network);
+      if (!applied) warning = '网络代理配置未能应用，请查看日志。';
+    }
+    if (previous === undefined || previous.network.retryIntervalSec !== config.network.retryIntervalSec ||
+        previous.network.offlinePageEnabled !== config.network.offlinePageEnabled) {
+      this.startRetryController();
+    }
+    if (previous === undefined || previous.maintenance.hotkey !== config.maintenance.hotkey ||
+        previous.maintenance.hotkeyEnabled !== config.maintenance.hotkeyEnabled) {
+      this.shortcutHandle?.dispose();
+      this.shortcutHandle = undefined;
+      this.installShortcut();
+    }
+    if (previous === undefined || previous.logging.level !== config.logging.level) {
+      this.deps.log?.setLevel?.(config.logging.level);
+    }
+    if (previous === undefined || previous.maintenance.trayConfigEnabled !== config.maintenance.trayConfigEnabled) {
+      this.trayHandle?.destroy();
+      this.trayHandle = undefined;
+      this.createTray();
+    }
+    if (reloadPage) await this.reloadMain();
+    return warning;
+  }
+
+  async reloadConfiguredPage(): Promise<void> {
+    await this.reloadMain();
+  }
 
   get currentState(): AppState {
     return this.state;
@@ -344,6 +382,7 @@ export class AppController {
     const actions: TrayActions = {
       showWindow: () => this.showAndFocusMain(),
       openConfig: () => this.deps.window.openConfigWindow('用户从托盘打开配置界面'),
+      configEnabled: this.config?.maintenance.trayConfigEnabled ?? true,
       reload: () => this.reloadMain(),
       // 返回关闭流程的 Promise：即发即弃的调用方不受影响，需要等待
       // 日志刷新完成的调用方（如退出流程）可以 await。
@@ -489,6 +528,7 @@ export class AppController {
     const config = this.config;
     if (!config) return;
 
+    this.retryController?.stop();
     this.loadFailures = 0;
     this.retryController = new RetryController({
       retryIntervalSec: config.network.retryIntervalSec,

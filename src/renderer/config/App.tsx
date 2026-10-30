@@ -476,7 +476,13 @@ export function ConfigurationApp() {
           setConfigPath(result.configPath);
         }
         setBaseline(draft);
-        setSaveMessage('配置已保存，客户端正在重启…');
+        setSaveMessage(result.applyWarning
+          ? `配置已保存，但应用失败：${result.applyWarning}`
+          : result.applied === 'restart'
+          ? '配置已保存，客户端即将重启…'
+          : result.applied === 'reload'
+            ? '配置已保存，页面正在重新加载…'
+            : '配置已保存并生效。');
         setPhase('ready');
       } catch (error) {
         setSaveError(`保存失败：${describeError(error)}`);

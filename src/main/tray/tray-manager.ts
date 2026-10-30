@@ -15,6 +15,7 @@ import type { PlatformCapabilities, TrayProtocol } from '../platform/platform-ad
 export interface TrayActions {
   showWindow(): void | Promise<void>;
   openConfig(): void | Promise<void>;
+  configEnabled?: boolean;
   reload(): void | Promise<void>;
   quit(): void | Promise<void>;
 }
