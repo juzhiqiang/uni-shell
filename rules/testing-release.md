@@ -52,7 +52,7 @@
 
 - 升版单独成一个提交，只包含 `package.json`、`package-lock.json` 和 `CHANGELOG.md`，不混入功能或修复改动。
 - Commit message 固定格式：`chore: 升级版本号至 x.y.z`。
-- 任务完成且验证通过后，代理可自主执行升版提交；打 tag、push 和触发发布仍需用户授权。
+- 任务完成且验证通过后，凡涉及实质性新增功能（`feat`）或缺陷修复（`fix`），代理必须主动执行升版并提交，无需用户逐次提醒；打 tag、push 和触发发布仍需用户授权。
 
 ### CHANGELOG
 
