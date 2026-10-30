@@ -59,6 +59,10 @@ export interface ApplyProxyOptions {
   fetchPacScript?: (url: string, timeoutMs: number) => Promise<string>;
 }
 
+export interface ProxyPort {
+  apply: (config: NetworkConfig) => Promise<ProxyApplyResult>;
+}
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

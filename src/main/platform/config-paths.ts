@@ -12,6 +12,7 @@
  * 在对应平台上运行时两者等价，因此这不改变真实行为，只让解析结果可预测、可跨平台测试。
  */
 
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { posix, win32 } from 'node:path';
 
@@ -93,6 +94,24 @@ type PathApi = typeof posix;
 
 function pathApiFor(platform: NodePlatform): PathApi {
   return platform === 'win32' ? win32 : posix;
+}
+
+export interface DetectMacPortableOptions {
+  platform: NodePlatform;
+  executablePath?: string;
+  fileExists?: (path: string) => boolean;
+}
+
+/**
+ * macOS 便携交付判定：仅当 `.app` 旁置目录确实带有 `config.json` 时才按 ZIP 便携包处理；
+ * 标准安装（DMG）按规格 §5.2 使用 Application Support。
+ */
+export function detectMacPortableExecutablePath(options: DetectMacPortableOptions): string | undefined {
+  if (options.platform !== 'darwin' || !options.executablePath) return undefined;
+  const pathApi = pathApiFor('darwin');
+  const adjacentConfig = pathApi.join(pathApi.resolve(options.executablePath, '..'), CONFIG_FILE_NAME);
+  const exists = options.fileExists ?? existsSync;
+  return exists(adjacentConfig) ? options.executablePath : undefined;
 }
 
 /** 从 argv 中提取 `--config-dir=<目录>` 或 `--config-dir <目录>`。 */

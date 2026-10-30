@@ -12,6 +12,7 @@ import {
 import {
   CONFIG_BACKUP_FILE_NAME,
   CONFIG_FILE_NAME,
+  detectMacPortableExecutablePath,
   parseConfigDirArgv,
   resolveConfigPaths,
   type ResolveConfigPathsOptions,
@@ -221,6 +222,52 @@ describe('resolveConfigPaths 优先级', () => {
       'portable-windows',
       'user-config',
     ]);
+  });
+});
+
+describe('detectMacPortableExecutablePath', () => {
+  it('非 darwin 平台直接返回 undefined', () => {
+    expect(
+      detectMacPortableExecutablePath({
+        platform: 'win32',
+        executablePath: 'C:\\Apps\\UniShell.exe',
+        fileExists: () => true,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('未提供 executablePath 时返回 undefined', () => {
+    expect(
+      detectMacPortableExecutablePath({
+        platform: 'darwin',
+        fileExists: () => true,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('darwin 平台且存在同级 config.json 时返回 executablePath', () => {
+    const checkedPaths: string[] = [];
+    const result = detectMacPortableExecutablePath({
+      platform: 'darwin',
+      executablePath: '/Volumes/UniShell/UniShell.app/Contents/MacOS/UniShell',
+      fileExists: (filePath) => {
+        checkedPaths.push(filePath);
+        return filePath === '/Volumes/UniShell/UniShell.app/Contents/MacOS/config.json';
+      },
+    });
+
+    expect(result).toBe('/Volumes/UniShell/UniShell.app/Contents/MacOS/UniShell');
+    expect(checkedPaths).toEqual(['/Volumes/UniShell/UniShell.app/Contents/MacOS/config.json']);
+  });
+
+  it('darwin 平台但同级不存在 config.json 时返回 undefined', () => {
+    const result = detectMacPortableExecutablePath({
+      platform: 'darwin',
+      executablePath: '/Applications/UniShell.app/Contents/MacOS/UniShell',
+      fileExists: () => false,
+    });
+
+    expect(result).toBeUndefined();
   });
 });
 

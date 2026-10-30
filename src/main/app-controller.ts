@@ -27,7 +27,7 @@ import {
   decideCrashRecovery,
   isRecoverableRendererExit,
 } from './network/crash-guard';
-import type { ProxyApplyResult } from './network/proxy-manager';
+import type { ProxyPort } from './network/proxy-manager';
 import {
   RetryController,
   classifyLoadFailure,
@@ -36,6 +36,7 @@ import {
 } from './network/retry-controller';
 import type { ResolvedConfigPaths } from './platform/config-paths';
 import type { PlatformCapabilities } from './platform/platform-adapter';
+import type { PowerMonitorPort } from './platform/power-monitor';
 import { detectLaunchContext, type LaunchContext, type LaunchSource } from './instance/single-instance';
 import {
   runStartupDelay,
@@ -64,21 +65,12 @@ export type AppState =
   | 'shutting-down'
   | 'stopped';
 
-/** 代理应用端口；生产环境经 Electron session 注入（Task 5 的 applyProxy）。 */
-export interface ProxyPort {
-  apply(config: NetworkConfig): Promise<ProxyApplyResult>;
-}
+export type { ProxyPort } from './network/proxy-manager';
 
 /** 启动代理应用失败时请求用户决定是否继续创建远程业务窗口。 */
 export type ConfirmProxyFailure = (mode: NetworkConfig['proxyMode']) => Promise<boolean>;
 
-/** 电源监听端口；生产环境注入 Electron `powerMonitor`。 */
-export interface PowerMonitorPort {
-  onSuspend(handler: () => void): void;
-  onResume(handler: () => void): void;
-  /** 关闭时移除全部监听，避免监听器泄漏。 */
-  removeAllListeners(): void;
-}
+export type { PowerMonitorPort } from './platform/power-monitor';
 
 export interface WindowPort {
   openConfigWindow(reason: string): Promise<void>;
