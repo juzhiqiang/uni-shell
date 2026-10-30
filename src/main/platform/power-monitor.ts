@@ -4,3 +4,4 @@ export interface PowerMonitorPort {
   onResume: (handler: () => void) => void;
   removeAllListeners: () => void;
 }
+
