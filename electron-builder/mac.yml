@@ -3,6 +3,8 @@ productName: UniShell
 asar: true
 directories:
   output: release/mac
+# 显式关闭发布，理由同 windows.yml：CI 上不隐式推断发布提供方，避免缺少凭据导致打包失败。
+publish: null
 files:
   - dist/**/*
   - package.json

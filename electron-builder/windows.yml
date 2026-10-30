@@ -3,6 +3,12 @@ productName: UniShell
 asar: true
 directories:
   output: release/windows
+# 显式关闭发布：本基地的自动更新基础设施不在范围内，产物只通过 CI artifact 分发。
+# 不写 publish 时，electron-builder 26 在 CI 环境会隐式启用发布
+# （"Implicit publishing triggered by CI detection"），并按 git 远程地址把 GitHub 推断为
+# 发布提供方；生成 block map / latest.yml 时构造 GitHub publisher，缺少 GH_TOKEN 就直接
+# 让打包失败（错误出现在 block map 之后）。置 null 同时关闭隐式发布与更新信息文件生成。
+publish: null
 files:
   - dist/**/*
   - package.json

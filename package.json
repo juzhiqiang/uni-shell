@@ -10,10 +10,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "lint": "eslint src tests scripts vite.config.ts",
-    "build:dir": "npm run build && electron-builder --dir",
-    "build:win": "npm run build && electron-builder --config electron-builder/windows.yml --win",
-    "build:mac": "node scripts/verify-release.ts --preflight=mac && npm run build && electron-builder --config electron-builder/mac.yml --mac",
-    "build:linux": "node scripts/verify-release.ts --preflight=linux && npm run build && electron-builder --config electron-builder/linux.yml --linux",
+    "build:dir": "npm run build && electron-builder --dir --publish never",
+    "build:win": "npm run build && electron-builder --config electron-builder/windows.yml --win --publish never",
+    "build:mac": "node scripts/verify-release.ts --preflight=mac && npm run build && electron-builder --config electron-builder/mac.yml --mac --publish never",
+    "build:linux": "node scripts/verify-release.ts --preflight=linux && npm run build && electron-builder --config electron-builder/linux.yml --linux --publish never",
     "verify:release": "npm run typecheck && npm run lint && npm test && node scripts/verify-release.ts"
   },
   "devDependencies": {
