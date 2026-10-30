@@ -159,24 +159,16 @@ jobs:
           TAG="v${VERSION}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" \
-              release-bundle/windows/*.exe \
-              release-bundle/windows/*.zip \
-              release-bundle/mac/*.dmg \
-              release-bundle/mac/*.zip \
-              release-bundle/linux/*.deb \
-              release-bundle/linux/*.AppImage \
-              release-bundle/linux/*.zip \
+              release-bundle/windows/* \
+              release-bundle/mac/* \
+              release-bundle/linux/* \
               release-bundle/release-manifest.json \
               --clobber
           else
             gh release create "$TAG" \
-              release-bundle/windows/*.exe \
-              release-bundle/windows/*.zip \
-              release-bundle/mac/*.dmg \
-              release-bundle/mac/*.zip \
-              release-bundle/linux/*.deb \
-              release-bundle/linux/*.AppImage \
-              release-bundle/linux/*.zip \
+              release-bundle/windows/* \
+              release-bundle/mac/* \
+              release-bundle/linux/* \
               release-bundle/release-manifest.json \
               --title "UniShell v${VERSION}" \
               --notes "UniShell 跨平台自动打包构建产物（版本 v${VERSION}）"

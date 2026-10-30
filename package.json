@@ -1,6 +1,6 @@
 {
   "name": "uni-shell",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Cross-platform desktop shell for remote web applications",
   "author": "UniShell Contributors",
   "desktopName": "uni-shell.desktop",

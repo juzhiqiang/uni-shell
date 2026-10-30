@@ -24,7 +24,7 @@ mac:
       arch:
         - x64
         - arm64
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
   hardenedRuntime: true
   gatekeeperAssess: false
   forceCodeSigning: false

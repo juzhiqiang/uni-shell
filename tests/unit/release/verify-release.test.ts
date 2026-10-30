@@ -13,17 +13,17 @@ async function createReleaseFixture(): Promise<string> {
   await writeFile(join(directory, 'config.example.json'), '{"schemaVersion":1}\n');
 
   for (const [platform, filenames] of [
-    ['windows', ['UniShell-1.0.0-x64.exe', 'UniShell-1.0.0-x64.zip']],
+    ['windows', ['UniShell-1.0.0-win-x64.exe', 'UniShell-1.0.0-win-x64.zip']],
     [
       'mac',
       [
-        'UniShell-1.0.0-arm64.dmg',
-        'UniShell-1.0.0-arm64.zip',
-        'UniShell-1.0.0-x64.dmg',
-        'UniShell-1.0.0-x64.zip',
+        'UniShell-1.0.0-mac-arm64.dmg',
+        'UniShell-1.0.0-mac-arm64.zip',
+        'UniShell-1.0.0-mac-x64.dmg',
+        'UniShell-1.0.0-mac-x64.zip',
       ],
     ],
-    ['linux', ['UniShell-1.0.0-x64.AppImage', 'UniShell-1.0.0-x64.deb', 'UniShell-1.0.0-x64.zip']],
+    ['linux', ['UniShell-1.0.0-linux-x64.AppImage', 'UniShell-1.0.0-linux-x64.deb', 'UniShell-1.0.0-linux-x64.zip']],
   ] as const) {
     const platformDirectory = join(directory, platform);
     await mkdir(platformDirectory, { recursive: true });
@@ -64,7 +64,7 @@ describe('verifyRelease', () => {
       ['linux', ['x64']],
     ]);
     expect(result.manifest.artifacts[0].sha256).toBe(
-      createHash('sha256').update('UniShell-1.0.0-x64.exe').digest('hex'),
+      createHash('sha256').update('UniShell-1.0.0-win-x64.exe').digest('hex'),
     );
     expect(result.manifest.configuration).toEqual({
       template: 'config.example.json',
@@ -76,7 +76,7 @@ describe('verifyRelease', () => {
 
   it('rejects a platform when a required artifact or its packaged config template is missing', async () => {
     const releaseDir = await createReleaseFixture();
-    await rm(join(releaseDir, 'linux', 'UniShell-1.0.0-x64.AppImage'));
+    await rm(join(releaseDir, 'linux', 'UniShell-1.0.0-linux-x64.AppImage'));
 
     await expect(
       verifyRelease({

@@ -26,7 +26,7 @@ win:
     - target: zip
       arch:
         - x64
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
 nsis:
   # 向导式安装：保留「选择安装位置」页，用户可自选盘符与目录（规格 §13）。
   # 默认仍装到当前用户目录（%LOCALAPPDATA%\Programs\UniShell），不需要 UAC。
