@@ -18,7 +18,8 @@ import {
 import { createIconPickPort } from './main/appearance/icon-picker';
 import { registerConfigIpc, testTargetConnection } from './main/config/config-ipc';
 import { createConfigService } from './main/config/config-service';
-import { createLogger } from './main/logging/logger';
+import { createLogger, resolveLogDirectory } from './main/logging/logger';
+import { readRecentLogs } from './main/logging/log-reader';
 import {
   detectMacPortableExecutablePath,
   resolveConfigPaths,
@@ -97,9 +98,15 @@ async function bootstrap(): Promise<void> {
   const initialLoad = await configService.load();
   const initialConfig = initialLoad.config;
 
+  const logDirectory = resolveLogDirectory({
+    platform: process.platform as NodePlatform,
+    env: process.env as Record<string, string | undefined>,
+  });
+
   const logger = createLogger({
     platform: process.platform as NodePlatform,
     env: process.env as Record<string, string | undefined>,
+    directory: logDirectory,
     level: initialConfig?.logging.level,
     retentionDays: initialConfig?.logging.retentionDays,
     context: {
@@ -272,6 +279,15 @@ async function bootstrap(): Promise<void> {
     reload: (config) => controller.applySavedConfig(config, true),
     applyHot: (config) => controller.applySavedConfig(config, false),
     testConnection: (url, network) => testTargetConnection(url, network),
+    getLogs: (options) => readRecentLogs({ directory: logDirectory, ...options }),
+    openLogDirectory: async () => {
+      try {
+        const error = await shell.openPath(logDirectory);
+        return error === '';
+      } catch {
+        return false;
+      }
+    },
     pickIcon: createIconPickPort({
       getConfigWindow: () => windowManager.getConfigWindow(),
       getWriteDirectory: () => paths.writeDirectory,

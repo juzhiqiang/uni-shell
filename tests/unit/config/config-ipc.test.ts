@@ -546,3 +546,26 @@ describe('classifyConnectionError', () => {
     expect(classifyConnectionError(new Error('boom'))).toContain('boom');
   });
 });
+
+describe('getLogs 与 openLogDirectory 通道', () => {
+  it('getLogs 委托给 deps.getLogs 并回传日志列表', async () => {
+    const mockLogs = { entries: [{ time: '10:00:00', level: 'INFO', event: 'startup', message: 'ok' }], directory: '/logs' };
+    const getLogs = vi.fn(async () => mockLogs);
+    const harness = createHarness({ overrides: { getLogs } });
+    registerConfigIpc(harness.deps);
+
+    const result = await harness.handlers.get(CONFIG_IPC_CHANNELS.getLogs)?.({}, { limit: 50 });
+    expect(getLogs).toHaveBeenCalledWith({ limit: 50 });
+    expect(result).toEqual(mockLogs);
+  });
+
+  it('openLogDirectory 委托给 deps.openLogDirectory', async () => {
+    const openLogDirectory = vi.fn(async () => true);
+    const harness = createHarness({ overrides: { openLogDirectory } });
+    registerConfigIpc(harness.deps);
+
+    const result = await harness.handlers.get(CONFIG_IPC_CHANNELS.openLogDirectory)?.({});
+    expect(openLogDirectory).toHaveBeenCalled();
+    expect(result).toBe(true);
+  });
+});

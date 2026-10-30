@@ -26,10 +26,12 @@ function createInvokeSpy(): { invoke: ReturnType<typeof vi.fn>; calls: unknown[]
 }
 
 describe('白名单通道表', () => {
-  it('恰好定义六个具名通道', () => {
+  it('恰好定义八个具名通道', () => {
     expect(Object.keys(CONFIG_IPC_CHANNELS).sort()).toEqual([
       'getConfig',
+      'getLogs',
       'iconPick',
+      'openLogDirectory',
       'resetConfig',
       'saveConfig',
       'testConnection',
@@ -55,12 +57,14 @@ describe('白名单通道表', () => {
 });
 
 describe('createConfigBridge', () => {
-  it('只暴露六个具名方法，没有通用发送能力', () => {
+  it('只暴露八个具名方法，没有通用发送能力', () => {
     const { invoke } = createInvokeSpy();
     const bridge = createConfigBridge(invoke as never);
 
     expect(Object.keys(bridge).sort()).toEqual([
       'getConfig',
+      'getLogs',
+      'openLogDirectory',
       'pickIcon',
       'resetConfig',
       'saveConfig',
@@ -90,6 +94,8 @@ describe('createConfigBridge', () => {
       offlinePageEnabled: true,
     });
     await bridge.pickIcon();
+    await bridge.getLogs({ limit: 100 });
+    await bridge.openLogDirectory();
 
     expect(calls).toEqual([
       ['uni-shell:config:get'],
@@ -110,6 +116,8 @@ describe('createConfigBridge', () => {
         },
       ],
       ['uni-shell:icon:pick'],
+      ['uni-shell:logs:get', { limit: 100 }],
+      ['uni-shell:logs:open-directory'],
     ]);
   });
 

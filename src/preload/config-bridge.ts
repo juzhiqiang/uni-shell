@@ -18,7 +18,9 @@ import {
   type ConfigInvoke,
   type ConfigIpcChannel,
   type ConnectionResult,
+  type FormattedLogEntry,
   type IconPickResult,
+  type LogQueryResult,
   type SaveResult,
 } from '../shared/ipc-contract';
 
@@ -30,7 +32,9 @@ export {
   type ConfigInvoke,
   type ConfigIpcChannel,
   type ConnectionResult,
+  type FormattedLogEntry,
   type IconPickResult,
+  type LogQueryResult,
   type SaveResult,
 };
 
@@ -49,6 +53,8 @@ export function createConfigBridge(invoke: ConfigInvoke): ConfigBridge {
     testConnection: (url, network) =>
       invoke(CONFIG_IPC_CHANNELS.testConnection, url, network) as Promise<ConnectionResult>,
     pickIcon: () => invoke(CONFIG_IPC_CHANNELS.iconPick) as Promise<IconPickResult>,
+    getLogs: (options) => invoke(CONFIG_IPC_CHANNELS.getLogs, options) as Promise<LogQueryResult>,
+    openLogDirectory: () => invoke(CONFIG_IPC_CHANNELS.openLogDirectory) as Promise<boolean>,
   };
 }
 

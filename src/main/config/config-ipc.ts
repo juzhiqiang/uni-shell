@@ -23,6 +23,7 @@ import {
   type ConfigIpcChannel,
   type ConnectionResult,
   type IconPickResult,
+  type LogQueryResult,
   type SaveResult,
 } from '../../shared/ipc-contract';
 
@@ -51,6 +52,10 @@ export interface ConfigIpcDeps {
   testConnection?(url: string, network: NetworkConfig): Promise<ConnectionResult>;
   /** 图标选择出口（规格 §5.4）；由主进程用文件对话框 + icon-manager 注入。 */
   pickIcon?(): Promise<IconPickResult>;
+  /** 读取运行日志出口；供配置界面日志查看器消费。 */
+  getLogs?(options?: { limit?: number; level?: string }): Promise<LogQueryResult>;
+  /** 打开系统日志目录出口。 */
+  openLogDirectory?(): Promise<boolean>;
 }
 
 export interface ConfigIpcRegistration {
@@ -208,6 +213,34 @@ export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
     }
   }
 
+  async function handleGetLogs(optionsArg: unknown): Promise<LogQueryResult> {
+    if (deps.getLogs === undefined) {
+      return { entries: [], directory: '' };
+    }
+    try {
+      const opts =
+        typeof optionsArg === 'object' && optionsArg !== null
+          ? (optionsArg as { limit?: number; level?: string })
+          : undefined;
+      return await deps.getLogs(opts);
+    } catch (error) {
+      deps.logger?.warn('logs-get-failed', { message: describeError(error) });
+      return { entries: [], directory: '' };
+    }
+  }
+
+  async function handleOpenLogDirectory(): Promise<boolean> {
+    if (deps.openLogDirectory === undefined) {
+      return false;
+    }
+    try {
+      return await deps.openLogDirectory();
+    } catch (error) {
+      deps.logger?.warn('logs-open-directory-failed', { message: describeError(error) });
+      return false;
+    }
+  }
+
   const listeners = new Map<ConfigIpcChannel, (args: unknown[]) => Promise<unknown>>([
     [CONFIG_IPC_CHANNELS.getConfig, () => handleGetConfig()],
     [CONFIG_IPC_CHANNELS.validateConfig, (args) => Promise.resolve(validateConfig(args[0]))],
@@ -215,6 +248,8 @@ export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
     [CONFIG_IPC_CHANNELS.resetConfig, () => handleResetConfig()],
     [CONFIG_IPC_CHANNELS.testConnection, (args) => handleTestConnection(args)],
     [CONFIG_IPC_CHANNELS.iconPick, () => handlePickIcon()],
+    [CONFIG_IPC_CHANNELS.getLogs, (args) => handleGetLogs(args[0])],
+    [CONFIG_IPC_CHANNELS.openLogDirectory, () => handleOpenLogDirectory()],
   ]);
 
   for (const channel of Object.values(CONFIG_IPC_CHANNELS)) {

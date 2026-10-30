@@ -25,6 +25,8 @@ export const CONFIG_IPC_CHANNELS = {
   resetConfig: 'uni-shell:config:reset',
   testConnection: 'uni-shell:network:test',
   iconPick: 'uni-shell:icon:pick',
+  getLogs: 'uni-shell:logs:get',
+  openLogDirectory: 'uni-shell:logs:open-directory',
 } as const;
 
 export type ConfigIpcChannel = (typeof CONFIG_IPC_CHANNELS)[keyof typeof CONFIG_IPC_CHANNELS];
@@ -72,10 +74,25 @@ export interface IconPickResult {
   message?: string;
 }
 
+/** 日志项格式化信息，供界面展示。 */
+export interface FormattedLogEntry {
+  time: string;
+  level: string;
+  event: string;
+  message: string;
+  data?: unknown;
+}
+
+/** 日志查询结果。 */
+export interface LogQueryResult {
+  entries: FormattedLogEntry[];
+  directory: string;
+}
+
 /** 白名单调用出口；通道类型受白名单约束，无法传入表外通道。 */
 export type ConfigInvoke = (channel: ConfigIpcChannel, ...args: unknown[]) => Promise<unknown>;
 
-/** 暴露给配置界面的 API：固定六个具名方法，没有通用发送能力。 */
+/** 暴露给配置界面的 API：具名白名单方法，没有通用发送能力。 */
 export interface ConfigBridge {
   getConfig(): Promise<AppConfig>;
   validateConfig(input: unknown): Promise<ValidationResult<AppConfig>>;
@@ -83,5 +100,7 @@ export interface ConfigBridge {
   resetConfig(): Promise<AppConfig>;
   testConnection(url: string, network: NetworkConfig): Promise<ConnectionResult>;
   pickIcon(): Promise<IconPickResult>;
+  getLogs(options?: { limit?: number; level?: string }): Promise<LogQueryResult>;
+  openLogDirectory(): Promise<boolean>;
 }
 
