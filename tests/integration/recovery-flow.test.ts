@@ -638,9 +638,38 @@ describe('代理切换（规格 §7，接口代理）', () => {
     expect(logEvents(memory)).toContain('proxy-scope-empty');
   });
 
-  it('代理应用失败不阻塞启动，仅记录错误', async () => {
+  it('启动代理失败后记录失败和用户拒绝，不记录错误原文或创建远程窗口', async () => {
     const { deps, memory, paths, session, fakeWindow } = createDeps();
-    session.setProxy.mockRejectedValueOnce(new Error('代理服务器不可达'));
+    session.setProxy.mockRejectedValueOnce(new Error('proxy failure details: http://operator:secret@proxy.internal'));
+    deps.confirmProxyFailure = async () => false;
+    writeConfig(memory, paths, {
+      ...baseConfig(),
+      network: {
+        ...baseConfig().network,
+        proxyMode: 'pac',
+        proxyServer: 'https://pac.example.com/proxy.pac',
+        apiProxyHosts: ['api.example.com'],
+      },
+    });
+
+    const controller = new AppController(deps);
+    await controller.start(START_OPTIONS);
+
+    expect(controller.currentState).toBe('configuring');
+    expect(fakeWindow.calls.some((call) => call.startsWith('openConfigWindow:'))).toBe(true);
+    expect(fakeWindow.calls).not.toContain('createMainWindow');
+    await settleLog();
+    expect(logData(memory, 'proxy-apply-failed')).toMatchObject({ mode: 'pac' });
+    expect(logData(memory, 'proxy-apply-failed')).not.toHaveProperty('message');
+    expect(logData(memory, 'proxy-startup-decision')).toMatchObject({ mode: 'pac', decision: 'configure' });
+    expect(JSON.stringify(readLog(memory))).not.toContain('secret');
+    expect(JSON.stringify(readLog(memory))).not.toContain('proxy failure details');
+  });
+
+  it('启动代理失败后用户同意继续时建窗并记录继续决定', async () => {
+    const { deps, memory, paths, session, fakeWindow } = createDeps();
+    session.setProxy.mockRejectedValueOnce(new Error('proxy failure details'));
+    deps.confirmProxyFailure = async () => true;
     writeConfig(memory, paths, {
       ...baseConfig(),
       network: {
@@ -657,7 +686,8 @@ describe('代理切换（规格 §7，接口代理）', () => {
     expect(controller.currentState).toBe('running');
     expect(fakeWindow.calls).toContain('createMainWindow');
     await settleLog();
-    expect(logData(memory, 'proxy-apply-failed')).toMatchObject({ mode: 'pac' });
+    expect(logData(memory, 'proxy-startup-decision')).toMatchObject({ mode: 'pac', decision: 'continue' });
+    expect(JSON.stringify(readLog(memory))).not.toContain('proxy failure details');
   });
 });
 

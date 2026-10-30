@@ -288,6 +288,59 @@ describe('AppController 启动', () => {
     expect(fakeWindow.calls).toContain('createMainWindow');
   });
 
+  it('代理应用失败时等待用户同意后才继续创建主窗口', async () => {
+    let resolveDecision!: (proceed: boolean) => void;
+    const stages: string[] = [];
+    const proxy = { apply: vi.fn(async () => { throw new Error('failure'); }) };
+    const confirmProxyFailure = vi.fn(() => new Promise<boolean>((resolve) => { resolveDecision = resolve; }));
+    const { deps, fakeWindow } = createDeps({
+      proxy,
+      confirmProxyFailure,
+      startupTiming: (stage) => stages.push(stage),
+    });
+    const controller = new AppController(deps);
+
+    const starting = controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fakeWindow.calls).not.toContain('createMainWindow');
+    expect(confirmProxyFailure).toHaveBeenCalledOnce();
+    expect(stages).toEqual(['configLoaded', 'proxyApplied']);
+
+    resolveDecision(true);
+    await starting;
+    expect(fakeWindow.calls).toContain('createMainWindow');
+    expect(controller.currentState).toBe('running');
+  });
+
+  it('用户拒绝代理失败后继续时只打开配置页', async () => {
+    const proxy = { apply: vi.fn(async () => { throw new Error('failure'); }) };
+    const { deps, fakeWindow } = createDeps({ proxy, confirmProxyFailure: async () => false });
+    const controller = new AppController(deps);
+
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+    expect(fakeWindow.calls.some((call) => call.startsWith('openConfigWindow:'))).toBe(true);
+    expect(fakeWindow.calls).not.toContain('createMainWindow');
+    expect(controller.currentState).toBe('configuring');
+  });
+
+  it('运行期间代理热切换失败不请求启动确认', async () => {
+    const confirmProxyFailure = vi.fn(async () => true);
+    const proxy = { apply: vi.fn(async () => { throw new Error('failure'); }) };
+    const { deps } = createDeps({ proxy, confirmProxyFailure });
+    const controller = new AppController(deps);
+
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+    confirmProxyFailure.mockClear();
+    proxy.apply.mockRejectedValueOnce(new Error('runtime failure'));
+
+    const applied = await controller.applyProxyConfig(createDefaultConfig('https://example.com').network);
+
+    expect(applied).toBe(false);
+    expect(confirmProxyFailure).not.toHaveBeenCalled();
+  });
+
   it('记录配置加载和代理应用的启动阶段', async () => {
     const stages: string[] = [];
     const { deps } = createDeps({ startupTiming: (stage) => stages.push(stage) });

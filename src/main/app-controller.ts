@@ -69,6 +69,9 @@ export interface ProxyPort {
   apply(config: NetworkConfig): Promise<ProxyApplyResult>;
 }
 
+/** 启动代理应用失败时请求用户决定是否继续创建远程业务窗口。 */
+export type ConfirmProxyFailure = (mode: NetworkConfig['proxyMode']) => Promise<boolean>;
+
 /** 电源监听端口；生产环境注入 Electron `powerMonitor`。 */
 export interface PowerMonitorPort {
   onSuspend(handler: () => void): void;
@@ -115,6 +118,8 @@ export interface AppControllerDeps {
   shortcutTarget?: ShortcutTarget;
   /** 代理应用端口；提供时启动流程在创建主窗口前应用代理（规格 §7）。 */
   proxy?: ProxyPort;
+  /** 启动代理失败确认端口；缺少确认端口时按拒绝处理。 */
+  confirmProxyFailure?: ConfirmProxyFailure;
   /** 电源监听端口；提供时记录休眠/唤醒诊断并在唤醒后重载页面（规格 §14.1）。 */
   powerMonitor?: PowerMonitorPort;
   singleInstance?: SingleInstanceHandle;
@@ -263,8 +268,16 @@ export class AppController {
     this.createTray();
     this.installShortcut();
     // 代理必须先于目标页面加载生效（规格 §7）。
-    await this.applyProxyConfig(result.config.network);
-    this.deps.startupTiming?.('proxyApplied');
+    const proxyApplied = await this.applyProxyConfig(
+      result.config.network,
+      true,
+      () => this.deps.startupTiming?.('proxyApplied'),
+    );
+    if (!proxyApplied) {
+      this.state = 'configuring';
+      await this.deps.window.openConfigWindow('启动代理应用失败，用户选择返回配置界面');
+      return;
+    }
     this.startRetryController();
     await this.applyStartupStrategy();
   }
@@ -422,13 +435,19 @@ export class AppController {
   /**
    * 规格 §7：应用接口代理。
    *
-   * 启动流程在创建主窗口前调用；运行中代理变化（配置保存后的热切换）可重复调用。
-   * 失败不阻塞启动：目标页面会加载失败，由重试与离线页接管，错误经日志留痕。
+   * 启动流程在创建主窗口前调用；启动失败需用户确认，热切换失败沿用现有错误处理。
    * 代理只对 `network.apiProxyHosts` 命中的接口域名生效，其余流量直连。
    */
-  async applyProxyConfig(network: NetworkConfig): Promise<void> {
+  async applyProxyConfig(
+    network: NetworkConfig,
+    startup = false,
+    onStartupApplied?: () => void,
+  ): Promise<boolean> {
     const port = this.deps.proxy;
-    if (!port) return;
+    if (!port) {
+      if (startup) onStartupApplied?.();
+      return true;
+    }
 
     const log = this.deps.log ?? noopLogger;
     if (network.proxyMode !== 'direct' && network.apiProxyHosts.length === 0) {
@@ -446,8 +465,25 @@ export class AppController {
       for (const note of result.notes) {
         log.warn('proxy-degraded', { mode: result.mode, note });
       }
-    } catch (error) {
-      log.error('proxy-apply-failed', { mode: network.proxyMode, message: describeError(error) });
+      if (startup) onStartupApplied?.();
+      return true;
+    } catch {
+      // Electron errors can include PAC URLs or proxy credentials; only mode is diagnostic-safe.
+      log.error('proxy-apply-failed', { mode: network.proxyMode });
+      if (!startup) return false;
+      onStartupApplied?.();
+
+      let proceed = false;
+      try {
+        proceed = await this.deps.confirmProxyFailure?.(network.proxyMode) ?? false;
+      } catch {
+        log.error('proxy-startup-confirmation-failed', { mode: network.proxyMode });
+      }
+      log.warn('proxy-startup-decision', {
+        mode: network.proxyMode,
+        decision: proceed ? 'continue' : 'configure',
+      });
+      return proceed;
     }
   }
 

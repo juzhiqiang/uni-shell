@@ -705,6 +705,19 @@ async function bootstrap(): Promise<void> {
     loginItem: createElectronLoginItemPort(),
     shortcutTarget: createShortcutTarget(),
     proxy: createElectronProxyPort(),
+    confirmProxyFailure: async (mode) => {
+      const result = await dialog.showMessageBox({
+        type: 'warning',
+        title: '代理应用失败',
+        message: `无法应用当前代理策略（${mode}）。`,
+        detail: '继续启动将创建远程业务窗口，但接口请求可能无法按预期使用代理。',
+        buttons: ['仍然继续', '打开配置界面'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      });
+      return result.response === 0;
+    },
     powerMonitor: createElectronPowerMonitorPort(),
     startupTiming: reportStartupTiming,
     log: logger,
