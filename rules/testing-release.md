@@ -45,7 +45,7 @@
 
 - tag 格式为 `v<version>`（如 `v0.1.1`），由 CI 从 `package.json` 读取生成，不手工创建与之不一致的 tag。
 - 一个版本号只发布一次。已发布版本不得复用、不得改内容重打产物、不得删 tag 重建；产物有问题时升 PATCH 重新发布。
-- 触发发布工作流前确认 `package.json` 的版本与上一次已发布 tag 不同，否则 CI 的 `gh release upload --clobber` 会覆盖已发布产物。
+- 发布工作流在三平台打包前查询远程精确 tag；已存在时立即失败，查询异常时也失败关闭。发布步骤只创建新 Release，不允许覆盖已有 tag 或产物。
 - 创建或推送 tag、触发发布工作流，均属 `AGENTS.md` 中的 Push 授权范围，必须先获得用户明确授权。
 
 ### 升版提交
@@ -73,7 +73,7 @@
 
 - `electron-builder/windows.yml`、`mac.yml`、`linux.yml` 必须显式写顶层 `publish: null`；`package.json` 的构建脚本必须带 `--publish never`。
 - 原因：electron-builder 26 在 CI 环境且未指定发布策略时会隐式启用发布（日志 `Implicit publishing triggered by CI detection`），并按 git 远程地址把 GitHub 推断为发布提供方；生成 block map 与自动更新元数据时构造 GitHub publisher，缺少 `GH_TOKEN` 就在产物构建完成后抛 `InvalidConfigurationError`，让整个打包失败。
-- 发布到 GitHub Releases 不经过 electron-builder，而是由 `.github/workflows/package.yml` 的 `aggregate` 作业在三平台产物汇总并通过 `npm run verify:release` 后，用 `gh release` 完成：tag 为 `v<package.json version>`，上传 Windows `.exe`/`.zip`、macOS `.dmg`/`.zip`、Linux `.deb`/`.AppImage`/`.zip` 和 `release-manifest.json`；同一 tag 已存在时以 `--clobber` 覆盖上传，因此必须遵守「版本号规则」中一个版本只发布一次的约束。
+- 发布到 GitHub Releases 不经过 electron-builder，而是由 `.github/workflows/package.yml` 的 `aggregate` 作业在三平台产物汇总并通过 `npm run verify:release` 后，用 `gh release create` 发布：tag 为 `v<package.json version>`，上传 Windows `.exe`/`.zip`、macOS `.dmg`/`.zip`、Linux `.deb`/`.AppImage`/`.zip` 和 `release-manifest.json`。工作流先在 `checks` 作业拒绝已存在的远程 tag，因此一个版本只发布一次。
 - 发布工作流只能从 `main` 手动触发（`workflow_dispatch`），使用工作流内置的 `GITHUB_TOKEN`；触发属于 Push 授权范围，须先获得用户明确授权。
 - 本基线不含自动更新基础设施：`publish: null` 跳过 `latest.yml` 等更新元数据生成，GitHub Releases 只作为安装包下载渠道；`scripts/verify-release.ts` 仍只按安装包扩展名校验产物。
 - 若将来需要自动更新或改由 electron-builder 直接发布，先补齐凭据注入与发布范围决策，再改配置，并同步更新 `tests/unit/release/packaging-config.test.ts`。

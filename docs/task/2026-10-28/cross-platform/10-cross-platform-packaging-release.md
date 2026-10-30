@@ -74,6 +74,7 @@ spec: ../../../electron-desktop-shell-product-spec-v2.1-cross-platform.md
 - `npm run build:win -- --config.directories.output=release/task10-windows-validation/windows`：通过；实际生成 NSIS 和 ZIP，未配置 Windows 签名证书。
 - `node scripts/verify-release.ts --platform=windows --release-dir=release/task10-windows-validation`：通过；2 项产物及资源内配置模板验证通过。EXE SHA-256 `5ee9c964cef07ece1b3391ccd98d7d3487642af9b4cf669935e25b1f5560416e`；ZIP SHA-256 `96fb656603ac8d9644e69ed096d7291f600675c4a491a689b3e8d407cad3b8f5`。
 - 复核（2026-10-29）：`npm run typecheck`、`npm run lint` 通过；`npm test` 20 个文件、435 项全部通过；workflow YAML 解析通过，包含 checks、windows、macos、linux、aggregate 五个 job。
+- 发布不可覆盖保护（2026-10-30）：先在 `tests/unit/release/packaging-config.test.ts` 添加断言并确认旧 workflow 按预期失败，再在 `checks` 作业查询远程精确 tag；已存在和查询异常均失败，移除 `gh release upload --clobber` 分支。`npm test -- --run tests/unit/release/packaging-config.test.ts`：7/7 通过；`npm run typecheck`：通过；`npm run lint`：通过；`npm test`：35 个文件、701 项通过；workflow YAML 解析：通过。`npm run verify:release` 在最终产物验证阶段因当前宿主为 Windows、macOS 签名验证必须在 macOS 运行而阻塞；需在 macOS CI 验证完整产物。
 - GitHub Actions 所需配置：Secrets `CSC_LINK`、`CSC_KEY_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID`、`UNI_SHELL_LINUX_MAINTAINER`；未配置时 workflow 应失败而非产生未签名正式包。
 - Apple 签名 Secrets 仅暴露给 macOS 签名构建步骤，不传给 `npm ci` 或后续验证步骤。
 - `Step 6` 仍待 GitHub Actions 执行：本地不具备 macOS 构建宿主；配置所列 secrets 后，需成功运行 `Cross-platform packages` 并检查完整产物，之后才能完成任务状态。
