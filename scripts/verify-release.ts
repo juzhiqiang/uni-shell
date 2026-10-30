@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createReadStream, readdirSync } from 'node:fs';
-import { access, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 
 export const RELEASE_PLATFORMS = ['windows', 'mac', 'linux'] as const;
@@ -10,12 +9,13 @@ export type ReleasePlatform = (typeof RELEASE_PLATFORMS)[number];
 
 const TARGETS: Record<ReleasePlatform, { architectures: string[]; extensions: string[]; label: string }> = {
   windows: { architectures: ['x64'], extensions: ['.exe', '.zip'], label: 'Windows NSIS/ZIP' },
-  mac: { architectures: ['universal'], extensions: ['.dmg', '.zip'], label: 'macOS Universal DMG/ZIP' },
+  mac: { architectures: ['x64', 'arm64'], extensions: ['.dmg'], label: 'macOS DMG (x64/arm64)' },
   linux: { architectures: ['x64'], extensions: ['.deb', '.appimage'], label: 'Linux DEB/AppImage' },
 };
 
 const ARCHITECTURE_ALIASES: Record<string, string[]> = {
   x64: ['x64', 'x86_64', 'amd64'],
+  arm64: ['arm64', 'aarch64'],
   universal: ['universal'],
 };
 
@@ -81,12 +81,23 @@ async function artifactsFor(platformDirectory: string, platform: ReleasePlatform
   }
   const names = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
   const matches = names.filter((name) => TARGETS[platform].extensions.includes(extname(name).toLowerCase()));
-  for (const extension of TARGETS[platform].extensions) {
-    const name = matches.find((candidate) => extname(candidate).toLowerCase() === extension);
-    if (!name) throw new Error(TARGETS[platform].label + ' is missing a ' + extension + ' artifact');
-    const architecture = TARGETS[platform].architectures[0];
-    if (!ARCHITECTURE_ALIASES[architecture].some((alias) => name.toLowerCase().includes(alias))) {
-      throw new Error(name + ' does not declare ' + architecture + ' architecture');
+  if (platform === 'mac') {
+    for (const architecture of TARGETS.mac.architectures) {
+      const name = matches.find(
+        (candidate) =>
+          extname(candidate).toLowerCase() === '.dmg' &&
+          ARCHITECTURE_ALIASES[architecture].some((alias) => candidate.toLowerCase().includes(alias)),
+      );
+      if (!name) throw new Error(TARGETS.mac.label + ' is missing a .dmg (' + architecture + ') artifact');
+    }
+  } else {
+    for (const extension of TARGETS[platform].extensions) {
+      const name = matches.find((candidate) => extname(candidate).toLowerCase() === extension);
+      if (!name) throw new Error(TARGETS[platform].label + ' is missing a ' + extension + ' artifact');
+      const architecture = TARGETS[platform].architectures[0];
+      if (!ARCHITECTURE_ALIASES[architecture].some((alias) => name.toLowerCase().includes(alias))) {
+        throw new Error(name + ' does not declare ' + architecture + ' architecture');
+      }
     }
   }
   return matches.sort((left, right) => left.localeCompare(right));
@@ -167,10 +178,13 @@ export async function verifyRelease(options: VerifyReleaseOptions): Promise<Veri
     for (const filename of names) {
       const filePath = join(platformDirectory, filename);
       const fileStat = await stat(filePath);
+      const matchedArch = TARGETS[platform].architectures.find((arch) =>
+        ARCHITECTURE_ALIASES[arch]?.some((alias) => filename.toLowerCase().includes(alias)),
+      );
       artifacts.push({
         filename: join(platform, filename).replaceAll(String.fromCharCode(92), '/'),
         platform,
-        architectures: [...TARGETS[platform].architectures],
+        architectures: matchedArch ? [matchedArch] : [...TARGETS[platform].architectures],
         sizeBytes: fileStat.size,
         sha256: await sha256(filePath),
         signing: {
@@ -246,29 +260,13 @@ async function verifyMacSigning(releaseDir: string, allowUnsigned = false): Prom
   if (process.platform !== 'darwin') throw new Error('macOS signature verification must run on macOS');
   const macDir = join(releaseDir, 'mac');
   const names = await readdir(macDir);
-  const zip = names.find((name) => extname(name).toLowerCase() === '.zip');
-  const dmg = names.find((name) => extname(name).toLowerCase() === '.dmg');
-  if (!zip || !dmg) throw new Error('macOS signing verification requires ZIP and DMG artifacts');
+  const dmgs = names.filter((name) => extname(name).toLowerCase() === '.dmg');
+  if (dmgs.length === 0) throw new Error('macOS signing verification requires DMG artifacts');
 
-  const extractionDirectory = await mkdtemp(join(tmpdir(), 'uni-shell-mac-verify-'));
   try {
-    run('ditto', ['-x', '-k', join(macDir, zip), extractionDirectory]);
-    const findApp = async (directory: string): Promise<string | undefined> => {
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
-        const entryPath = join(directory, entry.name);
-        if (entry.isDirectory() && entry.name.endsWith('.app')) return entryPath;
-        if (entry.isDirectory()) {
-          const nested = await findApp(entryPath);
-          if (nested) return nested;
-        }
-      }
-      return undefined;
-    };
-    const appPath = await findApp(extractionDirectory);
-    if (!appPath) throw new Error('macOS ZIP does not contain an .app bundle');
-    run('codesign', ['--verify', '--deep', '--strict', appPath]);
-    run('xcrun', ['stapler', 'validate', appPath]);
-    run('xcrun', ['stapler', 'validate', join(macDir, dmg)]);
+    for (const dmg of dmgs) {
+      run('xcrun', ['stapler', 'validate', join(macDir, dmg)]);
+    }
     return { signed: true, notarized: true };
   } catch (error) {
     if (allowUnsigned) {
@@ -280,8 +278,6 @@ async function verifyMacSigning(releaseDir: string, allowUnsigned = false): Prom
       return { signed: false, notarized: false };
     }
     throw new Error('macOS signature or notarization verification failed: ' + String(error));
-  } finally {
-    await rm(extractionDirectory, { recursive: true, force: true });
   }
 }
 

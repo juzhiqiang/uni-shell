@@ -14,7 +14,7 @@ async function createReleaseFixture(): Promise<string> {
 
   for (const [platform, filenames] of [
     ['windows', ['UniShell-1.0.0-x64.exe', 'UniShell-1.0.0-x64.zip']],
-    ['mac', ['UniShell-1.0.0-universal.dmg', 'UniShell-1.0.0-universal.zip']],
+    ['mac', ['UniShell-1.0.0-arm64.dmg', 'UniShell-1.0.0-x64.dmg']],
     ['linux', ['UniShell-1.0.0-x64.deb', 'UniShell-1.0.0-x64.AppImage']],
   ] as const) {
     const platformDirectory = join(directory, platform);
@@ -47,8 +47,8 @@ describe('verifyRelease', () => {
     expect(result.manifest.artifacts.map(({ platform, architectures }) => [platform, architectures])).toEqual([
       ['windows', ['x64']],
       ['windows', ['x64']],
-      ['mac', ['universal']],
-      ['mac', ['universal']],
+      ['mac', ['arm64']],
+      ['mac', ['x64']],
       ['linux', ['x64']],
       ['linux', ['x64']],
     ]);
