@@ -118,6 +118,25 @@ describe('verifyRelease', () => {
     ).rejects.toThrow(/Developer ID signing and notarization/);
   });
 
+  it('accepts unsigned macOS artifacts when allowUnsignedMac is enabled', async () => {
+    const releaseDir = await createReleaseFixture();
+
+    const result = await verifyRelease({
+      releaseDir,
+      templatePath: join(releaseDir, 'config.example.json'),
+      platforms: ['mac'],
+      version: '1.0.0',
+      allowUnsignedMac: true,
+      signingStatus: { mac: { signed: false, notarized: false } },
+    });
+
+    expect(result.manifest.artifacts).toHaveLength(2);
+    expect(result.manifest.artifacts[0].signing).toEqual({
+      codeSigned: false,
+      notarized: false,
+    });
+  });
+
   it('rejects a missing or malformed configuration template', async () => {
     const releaseDir = await createReleaseFixture();
     const templatePath = join(releaseDir, 'config.example.json');

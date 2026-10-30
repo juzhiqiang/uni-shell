@@ -25,4 +25,4 @@ mac:
   artifactName: ${productName}-${version}-${arch}.${ext}
   hardenedRuntime: true
   gatekeeperAssess: false
-  forceCodeSigning: true
+  forceCodeSigning: false

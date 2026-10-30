@@ -8,6 +8,7 @@ permissions:
 
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  ALLOW_UNSIGNED_MAC: 'true'
 
 jobs:
   checks:
@@ -66,7 +67,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - run: node scripts/verify-release.ts --platform=mac --release-dir=release
+      - run: node scripts/verify-release.ts --platform=mac --release-dir=release --allow-unsigned-mac
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos

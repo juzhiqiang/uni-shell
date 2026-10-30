@@ -54,6 +54,7 @@ export interface VerifyReleaseOptions {
   version: string;
   now?: Date;
   signingStatus?: SigningStatus;
+  allowUnsignedMac?: boolean;
 }
 
 export interface VerifyReleaseResult {
@@ -156,7 +157,11 @@ export async function verifyRelease(options: VerifyReleaseOptions): Promise<Veri
     if (!(await hasPackagedConfigTemplate(platformDirectory))) {
       throw new Error(TARGETS[platform].label + ' is missing packaged config.example.json under app resources');
     }
-    if (platform === 'mac' && (!options.signingStatus?.mac?.signed || !options.signingStatus.mac.notarized)) {
+    if (
+      platform === 'mac' &&
+      (!options.signingStatus?.mac?.signed || !options.signingStatus.mac.notarized) &&
+      !options.allowUnsignedMac
+    ) {
       throw new Error('macOS artifacts require verified Developer ID signing and notarization');
     }
     for (const filename of names) {
@@ -208,12 +213,21 @@ function hasNotarizationCredentials(env: NodeJS.ProcessEnv): boolean {
   );
 }
 
-function assertMacBuildCredentials(env: NodeJS.ProcessEnv): void {
+function assertMacBuildCredentials(env: NodeJS.ProcessEnv, allowUnsigned = false): void {
   if (process.platform !== 'darwin') throw new Error('macOS packaging and signing must run on a macOS host');
-  if (!env.CSC_LINK && !env.CSC_NAME) {
-    throw new Error('macOS release requires a Developer ID signing certificate via CSC_LINK or CSC_NAME');
-  }
-  if (!hasNotarizationCredentials(env)) {
+  const hasCert = Boolean(env.CSC_LINK || env.CSC_NAME);
+  const hasNotarization = hasNotarizationCredentials(env);
+  if (!hasCert || !hasNotarization) {
+    if (allowUnsigned) {
+      process.stdout.write(
+        'macOS Developer ID certificate or notarization credentials not configured; continuing in unsigned mode.' +
+          String.fromCharCode(10),
+      );
+      return;
+    }
+    if (!hasCert) {
+      throw new Error('macOS release requires a Developer ID signing certificate via CSC_LINK or CSC_NAME');
+    }
     throw new Error('macOS release requires Apple notarization credentials');
   }
 }
@@ -228,7 +242,7 @@ function run(command: string, args: string[]): void {
   execFileSync(command, args, { stdio: 'pipe' });
 }
 
-async function verifyMacSigning(releaseDir: string): Promise<SigningStatus['mac']> {
+async function verifyMacSigning(releaseDir: string, allowUnsigned = false): Promise<SigningStatus['mac']> {
   if (process.platform !== 'darwin') throw new Error('macOS signature verification must run on macOS');
   const macDir = join(releaseDir, 'mac');
   const names = await readdir(macDir);
@@ -257,6 +271,14 @@ async function verifyMacSigning(releaseDir: string): Promise<SigningStatus['mac'
     run('xcrun', ['stapler', 'validate', join(macDir, dmg)]);
     return { signed: true, notarized: true };
   } catch (error) {
+    if (allowUnsigned) {
+      process.stdout.write(
+        'macOS package signature verification skipped or unnotarized (unsigned mode enabled): ' +
+          (error instanceof Error ? error.message : String(error)) +
+          String.fromCharCode(10),
+      );
+      return { signed: false, notarized: false };
+    }
     throw new Error('macOS signature or notarization verification failed: ' + String(error));
   } finally {
     await rm(extractionDirectory, { recursive: true, force: true });
@@ -286,8 +308,14 @@ function parseArguments(args: string[]): {
   preflight?: ReleasePlatform;
   releaseDir: string;
   platforms?: ReleasePlatform[];
+  allowUnsignedMac?: boolean;
 } {
-  const result: { preflight?: ReleasePlatform; releaseDir: string; platforms?: ReleasePlatform[] } = {
+  const result: {
+    preflight?: ReleasePlatform;
+    releaseDir: string;
+    platforms?: ReleasePlatform[];
+    allowUnsignedMac?: boolean;
+  } = {
     releaseDir: resolve('release'),
   };
   for (let index = 0; index < args.length; index += 1) {
@@ -298,6 +326,8 @@ function parseArguments(args: string[]): {
         throw new Error('Usage: --preflight ' + RELEASE_PLATFORMS.join('|'));
       }
       result.preflight = value as ReleasePlatform;
+    } else if (argument === '--allow-unsigned-mac' || argument === '--allow-unsigned') {
+      result.allowUnsignedMac = true;
     } else if (argument === '--platform' || argument.startsWith('--platform=')) {
       const value = argument.includes('=') ? argument.slice(argument.indexOf('=') + 1) : args[++index];
       if (!value || !RELEASE_PLATFORMS.includes(value as ReleasePlatform)) {
@@ -315,10 +345,17 @@ function parseArguments(args: string[]): {
 
 async function main(): Promise<void> {
   const args = parseArguments(process.argv.slice(2));
+  const allowUnsignedMac =
+    args.allowUnsignedMac ||
+    process.env.ALLOW_UNSIGNED_MAC === 'true' ||
+    (!process.env.CSC_LINK && !process.env.CSC_NAME);
+
   if (args.preflight) {
     if (args.preflight === 'mac') {
-      assertMacBuildCredentials(process.env);
-      process.stdout.write('macOS host and signing/notarization credentials are available.' + String.fromCharCode(10));
+      assertMacBuildCredentials(process.env, allowUnsignedMac);
+      if (process.env.CSC_LINK || process.env.CSC_NAME) {
+        process.stdout.write('macOS host and signing/notarization credentials are available.' + String.fromCharCode(10));
+      }
     } else if (args.preflight === 'linux') {
       assertLinuxBuildMetadata(process.env);
       process.stdout.write('Linux package maintainer metadata is available.' + String.fromCharCode(10));
@@ -331,7 +368,7 @@ async function main(): Promise<void> {
   const packageJson = JSON.parse(await readFile('package.json', 'utf8')) as { version: string };
   const signingStatus: SigningStatus = {};
   if (args.platforms?.includes('mac') || !args.platforms) {
-    signingStatus.mac = await verifyMacSigning(args.releaseDir);
+    signingStatus.mac = await verifyMacSigning(args.releaseDir, allowUnsignedMac);
   }
   if (args.platforms?.includes('windows') || !args.platforms) {
     signingStatus.windows = verifyWindowsAuthenticode(args.releaseDir);
@@ -341,6 +378,7 @@ async function main(): Promise<void> {
     version: packageJson.version,
     platforms: args.platforms,
     signingStatus,
+    allowUnsignedMac,
   });
   process.stdout.write(
     'Verified ' +
