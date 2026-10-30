@@ -1,6 +1,9 @@
 {
   "name": "uni-shell",
   "version": "0.1.0",
+  "description": "Cross-platform desktop shell for remote web applications",
+  "author": "UniShell Contributors",
+  "desktopName": "uni-shell.desktop",
   "private": true,
   "type": "module",
   "main": "dist/main/index.cjs",
