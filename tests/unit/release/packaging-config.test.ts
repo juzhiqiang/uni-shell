@@ -54,6 +54,13 @@ describe('electron-builder 发布策略', () => {
   it('发布工作流包含自动发布到 GitHub Releases 的步骤', () => {
     expect(releaseWorkflow).toContain('Publish to GitHub Releases');
     expect(releaseWorkflow).toContain('gh release create');
-    expect(releaseWorkflow).toContain('gh release upload');
+    expect(releaseWorkflow).not.toContain('gh release upload');
+  });
+
+  it('发布工作流遇到已存在的版本 tag 时失败且不覆盖 Release 产物', () => {
+    expect(releaseWorkflow).toContain('git ls-remote --exit-code --refs origin "refs/tags/$TAG"');
+    expect(releaseWorkflow).toContain('if [ "$TAG_LOOKUP_STATUS" -eq 0 ]; then');
+    expect(releaseWorkflow).toContain('if [ "$TAG_LOOKUP_STATUS" -ne 2 ]; then');
+    expect(releaseWorkflow).not.toContain('--clobber');
   });
 });

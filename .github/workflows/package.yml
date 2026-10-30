@@ -21,6 +21,22 @@ jobs:
             echo "Release packaging must be dispatched from main."
             exit 1
           fi
+      - name: Reject an existing release tag
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}"
+          set +e
+          git ls-remote --exit-code --refs origin "refs/tags/$TAG"
+          TAG_LOOKUP_STATUS=$?
+          set -e
+          if [ "$TAG_LOOKUP_STATUS" -eq 0 ]; then
+            echo "Release tag $TAG already exists; versions cannot be published more than once."
+            exit 1
+          fi
+          if [ "$TAG_LOOKUP_STATUS" -ne 2 ]; then
+            echo "Unable to check whether release tag $TAG exists."
+            exit "$TAG_LOOKUP_STATUS"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -157,19 +173,10 @@ jobs:
         run: |
           VERSION=$(node -p "require('./package.json').version")
           TAG="v${VERSION}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" \
-              release-bundle/windows/* \
-              release-bundle/mac/* \
-              release-bundle/linux/* \
-              release-bundle/release-manifest.json \
-              --clobber
-          else
-            gh release create "$TAG" \
-              release-bundle/windows/* \
-              release-bundle/mac/* \
-              release-bundle/linux/* \
-              release-bundle/release-manifest.json \
-              --title "UniShell v${VERSION}" \
-              --notes "UniShell 跨平台自动打包构建产物（版本 v${VERSION}）"
-          fi
+          gh release create "$TAG" \
+            release-bundle/windows/* \
+            release-bundle/mac/* \
+            release-bundle/linux/* \
+            release-bundle/release-manifest.json \
+            --title "UniShell v${VERSION}" \
+            --notes "UniShell 跨平台自动打包构建产物（版本 v${VERSION}）"
