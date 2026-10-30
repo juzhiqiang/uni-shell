@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const root = process.cwd();
+const releaseWorkflow = readFileSync(resolve(root, '.github/workflows/package.yml'), 'utf8');
 const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
   scripts: Record<string, string>;
 };
@@ -48,5 +49,11 @@ describe('electron-builder 发布策略', () => {
       const yaml = readFileSync(resolve(root, 'electron-builder', config), 'utf8');
       expect(topLevelEntries(yaml).get('publish')).not.toMatch(/github|generic|s3|spaces/);
     }
+  });
+
+  it('发布工作流包含自动发布到 GitHub Releases 的步骤', () => {
+    expect(releaseWorkflow).toContain('Publish to GitHub Releases');
+    expect(releaseWorkflow).toContain('gh release create');
+    expect(releaseWorkflow).toContain('gh release upload');
   });
 });
