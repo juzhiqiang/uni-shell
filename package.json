@@ -12,7 +12,7 @@
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
-    "lint": "eslint src tests scripts vite.config.ts",
+    "lint": "eslint src tests scripts vite.config.ts vitest.config.ts",
     "build:dir": "npm run build && electron-builder --dir --publish never",
     "build:win": "npm run build && electron-builder --config electron-builder/windows.yml --win --publish never",
     "build:mac": "node scripts/verify-release.ts --preflight=mac --allow-unsigned-mac && npm run build && electron-builder --config electron-builder/mac.yml --mac --publish never",
