@@ -7,17 +7,59 @@ import type { PlatformCapabilities } from '../platform/platform-adapter';
 import { REMOTE_PARTITION } from './session-policy';
 import { loadOfflinePage } from './page-loader';
 
+export interface AppDetailsOptions {
+  appId: string;
+  appIconPath?: string;
+}
+
 /**
  * 窗口工厂：把窗口层的中立选项映射为 Electron 的构造选项，并注入应用图标（规格 §5.4）。
- * `icon` 在启动前解析（用户图标或内置默认图标）；Windows 任务栏图标随窗口图标生效。
+ * `icon` 在启动前解析（用户图标或内置默认图标）；Windows 任务栏图标随窗口图标与 setAppDetails 生效。
  */
-export function createBrowserWindowFactory(getWindowIcon: () => Electron.NativeImage | undefined) {
+export function createBrowserWindowFactory(
+  getWindowIcon: () => Electron.NativeImage | undefined,
+  getAppDetails?: () => AppDetailsOptions | undefined,
+) {
   return (options: BrowserWindowConstructorOptions): BrowserWindow => {
     const icon = getWindowIcon();
-    return new BrowserWindow({
+    const win = new BrowserWindow({
       ...options,
       ...(icon !== undefined ? { icon } : {}),
     } as unknown as Electron.BrowserWindowConstructorOptions);
+
+    if (icon !== undefined && typeof win.setIcon === 'function') {
+      try {
+        win.setIcon(icon);
+      } catch {
+        // 忽略平台或原生调用的异常
+      }
+    }
+
+    if (process.platform === 'win32' && getAppDetails) {
+      const details = getAppDetails();
+      if (details && typeof win.setAppDetails === 'function') {
+        try {
+          win.setAppDetails({
+            appId: details.appId,
+            ...(details.appIconPath ? { appIconPath: details.appIconPath, appIconIndex: 0 } : {}),
+          });
+        } catch {
+          // 忽略不支持系统或环境调用异常
+        }
+      }
+    }
+
+    if (typeof win.once === 'function' && icon !== undefined && typeof win.setIcon === 'function') {
+      win.once('ready-to-show', () => {
+        try {
+          win.setIcon(icon);
+        } catch {
+          // 忽略
+        }
+      });
+    }
+
+    return win;
   };
 }
 

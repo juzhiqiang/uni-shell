@@ -73,6 +73,8 @@ export interface ResolvedAppIcon {
   fileName?: string;
   /** 回退到内置默认图标的原因；未回退时不存在。 */
   fallbackReason?: string;
+  /** Windows 任务栏专属 .ico 图标路径（如果存在）。 */
+  windowsIcoPath?: string;
 }
 
 export interface LoadAppIconDeps {
@@ -164,6 +166,53 @@ function fallbackIcon(images: IconImageFactory, reason: string): ResolvedAppIcon
 }
 
 /**
+ * 把 PNG 字节序列封装为合法的 ICO 格式（Windows 任务栏 setAppDetails 与快捷方式专属）。
+ * Windows Vista 起官方支持在 ICO 中直接内嵌 PNG 图像，无需二次转码。
+ * 结构：
+ * - ICONDIR (6 bytes): idReserved(0), idType(1), idCount(1)
+ * - ICONDIRENTRY (16 bytes): bWidth, bHeight, bColorCount(0), bReserved(0), wPlanes(1), wBitCount(32), dwBytesInRes, dwImageOffset(22)
+ * - PNG 原始图像数据 (紧随 22 字节头之后)
+ */
+export function wrapPngToIco(pngBytes: Uint8Array): Uint8Array {
+  let width = 0;
+  let height = 0;
+  if (
+    pngBytes.length >= 24 &&
+    pngBytes[0] === 0x89 &&
+    pngBytes[1] === 0x50 &&
+    pngBytes[2] === 0x4e &&
+    pngBytes[3] === 0x47
+  ) {
+    const view = new DataView(pngBytes.buffer, pngBytes.byteOffset, pngBytes.byteLength);
+    const w = view.getUint32(16, false);
+    const h = view.getUint32(20, false);
+    width = w >= 256 ? 0 : w;
+    height = h >= 256 ? 0 : h;
+  }
+  const icoSize = 22 + pngBytes.byteLength;
+  const ico = new Uint8Array(icoSize);
+  const view = new DataView(ico.buffer, ico.byteOffset, ico.byteLength);
+
+  // ICONDIR
+  view.setUint16(0, 0, true);
+  view.setUint16(2, 1, true);
+  view.setUint16(4, 1, true);
+
+  // ICONDIRENTRY
+  view.setUint8(6, width);
+  view.setUint8(7, height);
+  view.setUint8(8, 0);
+  view.setUint8(9, 0);
+  view.setUint16(10, 1, true);
+  view.setUint16(12, 32, true);
+  view.setUint32(14, pngBytes.byteLength, true);
+  view.setUint32(18, 22, true);
+
+  ico.set(pngBytes, 22);
+  return ico;
+}
+
+/**
  * 按配置解析应用图标。
  *
  * 任何异常（文件名不合法、文件缺失、读取失败、为空、超限、无法解析）都不抛出：
@@ -204,11 +253,26 @@ export async function loadAppIcon(deps: LoadAppIconDeps): Promise<ResolvedAppIco
     return fallbackIcon(images, `图标文件无法解析（可能已损坏或格式不受支持）：${path}`);
   }
 
+  let windowsIcoPath: string | undefined;
+  if (fileName.toLowerCase().endsWith('.ico')) {
+    windowsIcoPath = path;
+  } else if (fileName.toLowerCase().endsWith('.png')) {
+    const icoPath = joinPath(deps.configDirectory, `${ICON_FILE_BASE_NAME}.ico`);
+    try {
+      const icoBytes = wrapPngToIco(bytes);
+      await fs.writeFile(icoPath, icoBytes);
+      windowsIcoPath = icoPath;
+    } catch {
+      // 写入辅助 .ico 失败不影响常规图标加载
+    }
+  }
+
   return {
     image,
     trayImage: image.resize(TRAY_ICON_SIZE),
     source: 'configured',
     fileName,
+    windowsIcoPath,
   };
 }
 
@@ -248,6 +312,14 @@ export async function installPickedIcon(deps: InstallPickedIconDeps): Promise<Ic
 
   try {
     await fs.writeFile(target, bytes);
+    if (extension === 'png') {
+      const icoTarget = joinPath(deps.configDirectory, `${ICON_FILE_BASE_NAME}.ico`);
+      try {
+        await fs.writeFile(icoTarget, wrapPngToIco(bytes));
+      } catch {
+        // 辅助 .ico 写入失败不影响安装结果
+      }
+    }
   } catch (error) {
     return { ok: false, message: `图标写入配置目录失败：${describeError(error)}` };
   }
@@ -283,10 +355,13 @@ export async function removeUnreferencedIconFiles(
     return [];
   }
 
+  const companionIco = deps.configuredIcon === `${ICON_FILE_BASE_NAME}.png` ? `${ICON_FILE_BASE_NAME}.ico` : undefined;
+
   const removed: string[] = [];
   for (const entry of entries) {
     if (!isManagedIconFileName(entry)) continue;
     if (entry === deps.configuredIcon) continue;
+    if (companionIco !== undefined && entry === companionIco) continue;
     try {
       await deps.fs.unlink(joinPath(deps.configDirectory, entry));
       removed.push(entry);

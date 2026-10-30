@@ -126,6 +126,15 @@ async function bootstrap(): Promise<void> {
   const windowIcon = appIcon.image as unknown as Electron.NativeImage;
   const trayIcon = appIcon.trayImage as unknown as Electron.NativeImage;
 
+  const effectiveAppId =
+    appIcon.source === 'configured'
+      ? `${APP_USER_MODEL_ID}.custom.${appIcon.fileName ?? 'icon'}`
+      : APP_USER_MODEL_ID;
+
+  if (process.platform === 'win32') {
+    app.setAppUserModelId(effectiveAppId);
+  }
+
   if (app.dock && !appIcon.image.isEmpty()) {
     app.dock.setIcon(windowIcon);
   }
@@ -149,7 +158,10 @@ async function bootstrap(): Promise<void> {
   };
 
   const windowManager = new WindowManager({
-    createWindow: createBrowserWindowFactory(() => windowIcon),
+    createWindow: createBrowserWindowFactory(
+      () => windowIcon,
+      () => ({ appId: effectiveAppId, appIconPath: appIcon.windowsIcoPath }),
+    ),
     capabilities,
     screen,
     preloadPath: join(app.getAppPath(), 'dist/preload/index.cjs'),

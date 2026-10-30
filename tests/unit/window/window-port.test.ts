@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BrowserWindow } from 'electron';
 
-import { createWindowPortAdapter, type WindowPortManager } from '../../../src/main/window/window-port';
+import {
+  createBrowserWindowFactory,
+  createWindowPortAdapter,
+  type WindowPortManager,
+} from '../../../src/main/window/window-port';
 import { createDefaultConfig } from '../../../src/main/config/config-schema';
 import type { ConfigService } from '../../../src/main/config/config-service';
 
@@ -175,5 +180,60 @@ describe('window-port', () => {
 
     adapter.closeStaleWindows();
     expect(manager.closeAll).toHaveBeenCalled();
+  });
+
+  describe('createBrowserWindowFactory', () => {
+    it('创建窗口时注入 icon、调用 setIcon 并在 Windows 平台设置 setAppDetails', () => {
+      const setIconSpy = vi.spyOn(BrowserWindow.prototype, 'setIcon');
+      const setAppDetailsSpy = vi.spyOn(BrowserWindow.prototype, 'setAppDetails');
+      const mockIcon = { isEmpty: () => false } as unknown as Electron.NativeImage;
+
+      const originalPlatform = process.platform;
+      try {
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+        const factory = createBrowserWindowFactory(
+          () => mockIcon,
+          () => ({ appId: 'com.unishell.desktop.custom.icon', appIconPath: 'C:\\path\\app-icon.ico' }),
+        );
+
+        const win = factory({ width: 800, height: 600 });
+        expect(win).toBeDefined();
+        expect(setIconSpy).toHaveBeenCalledWith(mockIcon);
+        expect(setAppDetailsSpy).toHaveBeenCalledWith({
+          appId: 'com.unishell.desktop.custom.icon',
+          appIconPath: 'C:\\path\\app-icon.ico',
+          appIconIndex: 0,
+        });
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+        setIconSpy.mockRestore();
+        setAppDetailsSpy.mockRestore();
+      }
+    });
+
+    it('无自定义详情时 setAppDetails 仅设置 appId 恢复默认', () => {
+      const setAppDetailsSpy = vi.spyOn(BrowserWindow.prototype, 'setAppDetails');
+      const mockIcon = { isEmpty: () => false } as unknown as Electron.NativeImage;
+
+      const originalPlatform = process.platform;
+      try {
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+        const factory = createBrowserWindowFactory(
+          () => mockIcon,
+          () => ({ appId: 'com.unishell.desktop' }),
+        );
+
+        const win = factory({ width: 800, height: 600 });
+        expect(win).toBeDefined();
+        expect(setAppDetailsSpy).toHaveBeenCalledWith({
+          appId: 'com.unishell.desktop',
+        });
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+        setAppDetailsSpy.mockRestore();
+      }
+    });
   });
 });

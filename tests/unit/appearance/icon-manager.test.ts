@@ -9,6 +9,7 @@ import {
   readConfiguredIconFileName,
   removeUnreferencedIconFiles,
   resolveIconPath,
+  wrapPngToIco,
   type IconFileSystem,
   type IconImageFactory,
   type IconImageLike,
@@ -202,10 +203,10 @@ describe('loadAppIcon', () => {
 });
 
 describe('installPickedIcon', () => {
-  it('把所选图标复制到配置目录并返回预览', async () => {
+  it('把所选图标复制到配置目录并生成 Windows 伴生 ico 与返回预览', async () => {
     const fs = createFs({
       '/home/tester/Downloads/logo.png': bytes('picked-icon'),
-      [`${CONFIG_DIRECTORY}/app-icon.ico`]: bytes('old-icon'),
+      [`${CONFIG_DIRECTORY}/app-icon.icns`]: bytes('old-icns'),
     });
     const images = createImages();
 
@@ -222,8 +223,10 @@ describe('installPickedIcon', () => {
       `data:image/png;base64,${Buffer.from('resized:64x64:picked-icon').toString('base64')}`,
     );
     expect(fs.store.get(ICON_PATH)).toBeDefined();
-    // 旧扩展名的残留图标被清理，避免配置目录堆积。
-    expect(fs.store.has(`${CONFIG_DIRECTORY}/app-icon.ico`)).toBe(false);
+    // 为 Windows 任务栏自动生成配套的 .ico 文件。
+    expect(fs.store.has(`${CONFIG_DIRECTORY}/app-icon.ico`)).toBe(true);
+    // 未引用的其他扩展名（如旧 icns）被清理，避免配置目录堆积。
+    expect(fs.store.has(`${CONFIG_DIRECTORY}/app-icon.icns`)).toBe(false);
   });
 
   it('相同扩展名重复选择时覆盖安装', async () => {
@@ -275,10 +278,10 @@ describe('installPickedIcon', () => {
 });
 
 describe('removeUnreferencedIconFiles', () => {
-  it('清理未被配置引用的 app-icon.*，保留其他文件', async () => {
+  it('清理未被配置引用的 app-icon.*，保留当前文件与 Windows 伴生 ico', async () => {
     const fs = createFs({
       [ICON_PATH]: bytes('current'),
-      [`${CONFIG_DIRECTORY}/app-icon.ico`]: bytes('stale'),
+      [`${CONFIG_DIRECTORY}/app-icon.ico`]: bytes('companion-ico'),
       [`${CONFIG_DIRECTORY}/app-icon.icns`]: bytes('stale'),
       [`${CONFIG_DIRECTORY}/config.json`]: bytes('{}'),
     });
@@ -289,9 +292,28 @@ describe('removeUnreferencedIconFiles', () => {
       fs,
     });
 
-    expect(removed.sort()).toEqual(['app-icon.icns', 'app-icon.ico']);
+    expect(removed).toEqual(['app-icon.icns']);
     expect(fs.store.has(ICON_PATH)).toBe(true);
+    expect(fs.store.has(`${CONFIG_DIRECTORY}/app-icon.ico`)).toBe(true);
     expect(fs.store.has(`${CONFIG_DIRECTORY}/config.json`)).toBe(true);
+  });
+
+  it('配置为 ico 时清理残留的 app-icon.png 与 app-icon.icns', async () => {
+    const fs = createFs({
+      [`${CONFIG_DIRECTORY}/app-icon.ico`]: bytes('current-ico'),
+      [`${CONFIG_DIRECTORY}/app-icon.png`]: bytes('stale-png'),
+      [`${CONFIG_DIRECTORY}/app-icon.icns`]: bytes('stale-icns'),
+    });
+
+    const removed = await removeUnreferencedIconFiles({
+      configDirectory: CONFIG_DIRECTORY,
+      configuredIcon: 'app-icon.ico',
+      fs,
+    });
+
+    expect(removed.sort()).toEqual(['app-icon.icns', 'app-icon.png']);
+    expect(fs.store.has(`${CONFIG_DIRECTORY}/app-icon.ico`)).toBe(true);
+    expect(fs.store.has(`${CONFIG_DIRECTORY}/app-icon.png`)).toBe(false);
   });
 
   it('未配置自定义图标时清理全部 app-icon.*', async () => {
@@ -313,6 +335,90 @@ describe('removeUnreferencedIconFiles', () => {
     await expect(
       removeUnreferencedIconFiles({ configDirectory: CONFIG_DIRECTORY, configuredIcon: '', fs }),
     ).resolves.toEqual([]);
+  });
+});
+
+describe('wrapPngToIco', () => {
+  it('正确构造 22 字节 ICO 头并封装 PNG 图像数据', () => {
+    // 构造带合法 PNG 签名与 64x64 IHDR 的数据
+    const pngHeader = Buffer.alloc(24);
+    pngHeader.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+    pngHeader.writeUInt32BE(13, 8); // chunk length
+    pngHeader.write('IHDR', 12, 'ascii');
+    pngHeader.writeUInt32BE(64, 16); // width = 64
+    pngHeader.writeUInt32BE(64, 20); // height = 64
+
+    const ico = wrapPngToIco(pngHeader);
+    expect(ico.length).toBe(22 + 24);
+
+    const view = new DataView(ico.buffer, ico.byteOffset, ico.byteLength);
+    // ICONDIR
+    expect(view.getUint16(0, true)).toBe(0); // idReserved
+    expect(view.getUint16(2, true)).toBe(1); // idType = 1 (icon)
+    expect(view.getUint16(4, true)).toBe(1); // idCount = 1
+
+    // ICONDIRENTRY
+    expect(view.getUint8(6)).toBe(64); // bWidth
+    expect(view.getUint8(7)).toBe(64); // bHeight
+    expect(view.getUint8(8)).toBe(0); // bColorCount
+    expect(view.getUint8(9)).toBe(0); // bReserved
+    expect(view.getUint16(10, true)).toBe(1); // wPlanes
+    expect(view.getUint16(12, true)).toBe(32); // wBitCount
+    expect(view.getUint32(14, true)).toBe(24); // dwBytesInRes
+    expect(view.getUint32(18, true)).toBe(22); // dwImageOffset
+
+    // 图像内容
+    expect(Buffer.from(ico.subarray(22))).toEqual(pngHeader);
+  });
+
+  it('非 PNG 数据也能回退生成默认尺寸的合法 ICO 结构', () => {
+    const rawData = bytes('arbitrary-image-bytes');
+    const ico = wrapPngToIco(rawData);
+    expect(ico.length).toBe(22 + rawData.length);
+
+    const view = new DataView(ico.buffer, ico.byteOffset, ico.byteLength);
+    expect(view.getUint16(2, true)).toBe(1); // idType
+    expect(view.getUint8(6)).toBe(0); // bWidth 默认为 0 (>=256)
+    expect(view.getUint8(7)).toBe(0); // bHeight 默认为 0
+    expect(view.getUint32(14, true)).toBe(rawData.length);
+    expect(view.getUint32(18, true)).toBe(22);
+  });
+});
+
+describe('loadAppIcon windowsIcoPath 解析', () => {
+  it('配置为 ico 文件时直接使用该文件路径', async () => {
+    const icoPath = `${CONFIG_DIRECTORY}/app-icon.ico`;
+    const fs = createFs({ [icoPath]: bytes('valid-ico') });
+    const images = createImages();
+
+    const result = await loadAppIcon({
+      icon: 'app-icon.ico',
+      configDirectory: CONFIG_DIRECTORY,
+      fs,
+      images,
+    });
+
+    expect(result.source).toBe('configured');
+    expect(result.windowsIcoPath).toBe(icoPath);
+  });
+
+  it('配置为 png 文件时自动生成并写入配套的 app-icon.ico', async () => {
+    const fs = createFs({ [ICON_PATH]: bytes('valid-png') });
+    const images = createImages();
+
+    const result = await loadAppIcon({
+      icon: 'app-icon.png',
+      configDirectory: CONFIG_DIRECTORY,
+      fs,
+      images,
+    });
+
+    expect(result.source).toBe('configured');
+    const expectedIcoPath = `${CONFIG_DIRECTORY}/app-icon.ico`;
+    expect(result.windowsIcoPath).toBe(expectedIcoPath);
+    expect(fs.store.has(expectedIcoPath)).toBe(true);
+    const icoBytes = fs.store.get(expectedIcoPath);
+    expect(icoBytes?.length).toBe(22 + bytes('valid-png').length);
   });
 });
 

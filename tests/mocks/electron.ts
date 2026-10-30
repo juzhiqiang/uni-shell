@@ -3,6 +3,7 @@ export const app = {
   isPackaged: false,
   getLoginItemSettings: () => ({ openAtLogin: false }),
   setLoginItemSettings: () => {},
+  setAppUserModelId: () => {},
   quit: () => {},
   exit: () => {},
   requestSingleInstanceLock: () => true,
@@ -24,6 +25,14 @@ export class BrowserWindow {
   }
   loadFile() {
     return Promise.resolve();
+  }
+  setIcon() {}
+  setAppDetails() {}
+  on() {
+    return this;
+  }
+  once() {
+    return this;
   }
 }
 
