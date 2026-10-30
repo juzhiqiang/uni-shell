@@ -4,9 +4,9 @@ Uni Shell 是一个基于 Electron 的跨平台桌面客户端外壳，用于在
 
 ## 项目状态
 
-仓库已包含 Electron + TypeScript + React 工程、主进程模块、配置界面、自动化测试和三平台打包配置。当前仍处于开发与验收阶段，不是可直接用于生产发布的正式版本：跨平台打包任务仍在进行，Windows/macOS/Linux 实机验收尚未完成。当前发布阻塞和验证记录见 [验收报告](docs/release/2026-10-28-v1.0-acceptance-report.md)。
+仓库已包含 Electron + TypeScript + React 工程、主进程模块、配置界面、自动化测试和三平台打包配置。当前处于架构优化与验收阶段：主进程架构与性能改进任务（任务 14–21、23、24）已完成并合并到主分支，包括组合根解耦、ConfigService 单一权威配置、会话分区隔离、指数退避重试、启动关键路径优化与日志流化。
 
-任务 12（接口代理语义修正）仍在进行；任务 13（自定义应用图标）在任务索引中待开始。相关能力在三平台实机验证前不应视为已验收。详细状态见 [2026-10-29 任务索引](docs/task/2026-10-29/interface-proxy-and-app-icon/README.md)。
+详细状态见 [2026-10-29 架构与性能任务索引](docs/task/2026-10-29/architecture-performance/README.md) 与 [2026-10-29 返工任务索引](docs/task/2026-10-29/interface-proxy-and-app-icon/README.md)。当前发布阻塞和验证记录见 [验收报告](docs/release/2026-10-28-v1.0-acceptance-report.md)。
 
 ## 功能范围
 
@@ -78,5 +78,6 @@ rules/        按主题组织的工程规则
 - [跨平台开发计划](docs/superpowers/plans/2026-10-28-electron-shell-cross-platform.md)：架构、交付顺序和基线任务。
 - [2026-10-28 跨平台任务索引](docs/task/2026-10-28/cross-platform/README.md)：工程实现、打包和实机验收任务状态。
 - [2026-10-29 返工任务索引](docs/task/2026-10-29/interface-proxy-and-app-icon/README.md)：接口代理语义和自定义图标任务。
+- [2026-10-29 架构与性能改进任务索引](docs/task/2026-10-29/architecture-performance/README.md)：启动路径、会话分区、ConfigService、重试退避与 main.ts 适配器解耦。
 - [验收报告草稿](docs/release/2026-10-28-v1.0-acceptance-report.md)：自动化验证、产物状态、未完成的实机验收和发布阻塞。
 - [AI 协作规则](AGENTS.md)：任务执行、验证、文档维护和 Git 约定。
