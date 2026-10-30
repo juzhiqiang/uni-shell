@@ -14,8 +14,16 @@ async function createReleaseFixture(): Promise<string> {
 
   for (const [platform, filenames] of [
     ['windows', ['UniShell-1.0.0-x64.exe', 'UniShell-1.0.0-x64.zip']],
-    ['mac', ['UniShell-1.0.0-arm64.dmg', 'UniShell-1.0.0-x64.dmg']],
-    ['linux', ['UniShell-1.0.0-x64.deb', 'UniShell-1.0.0-x64.AppImage']],
+    [
+      'mac',
+      [
+        'UniShell-1.0.0-arm64.dmg',
+        'UniShell-1.0.0-arm64.zip',
+        'UniShell-1.0.0-x64.dmg',
+        'UniShell-1.0.0-x64.zip',
+      ],
+    ],
+    ['linux', ['UniShell-1.0.0-x64.AppImage', 'UniShell-1.0.0-x64.deb', 'UniShell-1.0.0-x64.zip']],
   ] as const) {
     const platformDirectory = join(directory, platform);
     await mkdir(platformDirectory, { recursive: true });
@@ -43,12 +51,15 @@ describe('verifyRelease', () => {
       now: new Date('2026-10-28T00:00:00.000Z'),
     });
 
-    expect(result.manifest.artifacts).toHaveLength(6);
+    expect(result.manifest.artifacts).toHaveLength(9);
     expect(result.manifest.artifacts.map(({ platform, architectures }) => [platform, architectures])).toEqual([
       ['windows', ['x64']],
       ['windows', ['x64']],
       ['mac', ['arm64']],
+      ['mac', ['arm64']],
       ['mac', ['x64']],
+      ['mac', ['x64']],
+      ['linux', ['x64']],
       ['linux', ['x64']],
       ['linux', ['x64']],
     ]);
@@ -130,7 +141,7 @@ describe('verifyRelease', () => {
       signingStatus: { mac: { signed: false, notarized: false } },
     });
 
-    expect(result.manifest.artifacts).toHaveLength(2);
+    expect(result.manifest.artifacts).toHaveLength(4);
     expect(result.manifest.artifacts[0].signing).toEqual({
       codeSigned: false,
       notarized: false,

@@ -9,8 +9,8 @@ export type ReleasePlatform = (typeof RELEASE_PLATFORMS)[number];
 
 const TARGETS: Record<ReleasePlatform, { architectures: string[]; extensions: string[]; label: string }> = {
   windows: { architectures: ['x64'], extensions: ['.exe', '.zip'], label: 'Windows NSIS/ZIP' },
-  mac: { architectures: ['x64', 'arm64'], extensions: ['.dmg'], label: 'macOS DMG (x64/arm64)' },
-  linux: { architectures: ['x64'], extensions: ['.deb', '.appimage'], label: 'Linux DEB/AppImage' },
+  mac: { architectures: ['x64', 'arm64'], extensions: ['.dmg', '.zip'], label: 'macOS DMG/ZIP (x64/arm64)' },
+  linux: { architectures: ['x64'], extensions: ['.deb', '.appimage', '.zip'], label: 'Linux DEB/AppImage/ZIP' },
 };
 
 const ARCHITECTURE_ALIASES: Record<string, string[]> = {
@@ -83,12 +83,14 @@ async function artifactsFor(platformDirectory: string, platform: ReleasePlatform
   const matches = names.filter((name) => TARGETS[platform].extensions.includes(extname(name).toLowerCase()));
   if (platform === 'mac') {
     for (const architecture of TARGETS.mac.architectures) {
-      const name = matches.find(
-        (candidate) =>
-          extname(candidate).toLowerCase() === '.dmg' &&
-          ARCHITECTURE_ALIASES[architecture].some((alias) => candidate.toLowerCase().includes(alias)),
-      );
-      if (!name) throw new Error(TARGETS.mac.label + ' is missing a .dmg (' + architecture + ') artifact');
+      for (const extension of TARGETS.mac.extensions) {
+        const name = matches.find(
+          (candidate) =>
+            extname(candidate).toLowerCase() === extension &&
+            ARCHITECTURE_ALIASES[architecture].some((alias) => candidate.toLowerCase().includes(alias)),
+        );
+        if (!name) throw new Error(TARGETS.mac.label + ' is missing a ' + extension + ' (' + architecture + ') artifact');
+      }
     }
   } else {
     for (const extension of TARGETS[platform].extensions) {
