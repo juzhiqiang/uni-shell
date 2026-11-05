@@ -14,6 +14,7 @@
   - 本地配置窗口：`local-config`（纯内存隔离会话，不落盘）。
 - 严禁不同信任级别的窗口共用默认会话（`session.defaultSession`）。
 - 会话级策略（下载拦截、权限申请请求、代理规则等）必须通过统一的 `SessionPolicy` 单点管理并挂载在对应的 session 实例上，禁止在窗口导航守卫中重复或覆盖注册。
+- 证书校验绕过只允许经显式配置开关（`network.allowUntrustedCertificates`，默认关闭）按会话启用，且只允许作用于远程业务会话 `persist:remote`；不得使用全局命令行证书开关，本地配置会话 `local-config` 必须保持系统默认校验（规格 §7、§11）。
 
 ## 导航、弹窗和权限
 
