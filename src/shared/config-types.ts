@@ -23,6 +23,16 @@ export type WindowCloseAction = 'hide' | 'quit';
 
 export type ProxyMode = 'direct' | 'system' | 'fixed' | 'pac';
 
+/**
+ * 网页缓存模式（规格 v2.1.5 §7）：
+ * - `keep`：不干预网页缓存（默认）；
+ * - `revalidate`：远程会话每个 http/https 请求附加 `Cache-Control: no-cache`，每次导航向服务器验证；
+ * - `clear`：在 `revalidate` 之上，启动首次加载目标页前清除 CacheStorage、Service Worker 与 HTTP 缓存；
+ *
+ * 任何模式都不清除 Cookie、localStorage、IndexedDB 等登录态存储。
+ */
+export type CacheMode = 'keep' | 'revalidate' | 'clear';
+
 export type InitialState = 'tray' | 'minimized';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -48,6 +58,8 @@ export interface NetworkConfig {
   retryIntervalSec: number;
   requestTimeoutSec: number;
   offlinePageEnabled: boolean;
+  /** 网页缓存模式，默认 `keep`；含义见规格 §7。 */
+  cacheMode: CacheMode;
 }
 
 export interface StartupConfig {

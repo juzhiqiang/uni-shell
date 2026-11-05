@@ -92,6 +92,7 @@ describe('createConfigBridge', () => {
       retryIntervalSec: 3,
       requestTimeoutSec: 20,
       offlinePageEnabled: true,
+      cacheMode: 'keep',
     });
     await bridge.pickIcon();
     await bridge.getLogs({ limit: 100 });
@@ -113,6 +114,7 @@ describe('createConfigBridge', () => {
           retryIntervalSec: 3,
           requestTimeoutSec: 20,
           offlinePageEnabled: true,
+          cacheMode: 'keep',
         },
       ],
       ['uni-shell:icon:pick'],

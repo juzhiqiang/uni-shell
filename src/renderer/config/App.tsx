@@ -4,6 +4,7 @@ import type { FormattedLogEntry, SaveResult } from '../../shared/ipc-contract';
 import type {
   AlwaysOnTopLevel,
   AppConfig,
+  CacheMode,
   InitialState,
   LogLevel,
   NetworkConfig,
@@ -37,6 +38,7 @@ interface FormDraft {
   retryIntervalSec: string;
   requestTimeoutSec: string;
   offlinePageEnabled: boolean;
+  cacheMode: CacheMode;
   openAtLogin: boolean;
   initialState: InitialState;
   delaySec: string;
@@ -85,6 +87,7 @@ function toDraft(config: AppConfig): FormDraft {
     retryIntervalSec: String(config.network.retryIntervalSec),
     requestTimeoutSec: String(config.network.requestTimeoutSec),
     offlinePageEnabled: config.network.offlinePageEnabled,
+    cacheMode: config.network.cacheMode,
     openAtLogin: config.startup.openAtLogin,
     initialState: config.startup.initialState,
     delaySec: String(config.startup.delaySec),
@@ -141,6 +144,7 @@ function buildCandidate(draft: FormDraft): Record<string, unknown> {
       retryIntervalSec: toInteger(draft.retryIntervalSec),
       requestTimeoutSec: toInteger(draft.requestTimeoutSec),
       offlinePageEnabled: draft.offlinePageEnabled,
+      cacheMode: draft.cacheMode,
     },
     startup: {
       openAtLogin: draft.openAtLogin,
@@ -346,6 +350,12 @@ const PROXY_MODE_OPTIONS: ReadonlyArray<{ value: ProxyMode; label: string }> = [
   { value: 'system', label: '系统代理' },
   { value: 'fixed', label: '固定代理' },
   { value: 'pac', label: 'PAC 地址' },
+];
+
+const CACHE_MODE_OPTIONS: ReadonlyArray<{ value: CacheMode; label: string }> = [
+  { value: 'keep', label: '保留缓存（默认）' },
+  { value: 'revalidate', label: '每次向服务器验证' },
+  { value: 'clear', label: '启动时清除缓存' },
 ];
 
 const INITIAL_STATE_OPTIONS: ReadonlyArray<{ value: InitialState; label: string }> = [
@@ -902,6 +912,18 @@ export function ConfigurationApp() {
                       min={1}
                       onChange={(value) => update('requestTimeoutSec', value)}
                     />
+                    <SelectField
+                      id="cacheMode"
+                      label="网页缓存模式"
+                      value={draft.cacheMode}
+                      options={CACHE_MODE_OPTIONS}
+                      onChange={(value) => update('cacheMode', value)}
+                    />
+                    <p className="field-hint">
+                      保留缓存：不干预网页缓存。每次向服务器验证：网页每次打开都向服务器确认版本，不变快、变了立即更新。启动时清除缓存：下次启动时清除
+                      HTTP 缓存、CacheStorage 与 Service Worker，适用于网页更新后仍显示旧版或白屏的场景。任何模式都不会删除
+                      Cookie、localStorage 等登录信息。
+                    </p>
                   </fieldset>
                 </div>
               </div>

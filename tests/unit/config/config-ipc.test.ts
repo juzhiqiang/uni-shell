@@ -99,7 +99,7 @@ function storedConfig(overrides: Partial<AppConfig> = {}): string {
       schemaVersion: 1,
       targetUrl: 'https://erp.example.com',
       window: { mode: 'window', alwaysOnTop: false, alwaysOnTopLevel: 'normal', display: 'primary', closeAction: 'hide' },
-      network: { proxyMode: 'direct', proxyServer: '', proxyBypass: '', retryIntervalSec: 3, requestTimeoutSec: 20, offlinePageEnabled: true },
+      network: { proxyMode: 'direct', proxyServer: '', proxyBypass: '', retryIntervalSec: 3, requestTimeoutSec: 20, offlinePageEnabled: true, cacheMode: 'keep' },
       startup: { openAtLogin: false, initialState: 'tray', delaySec: 0, delayOnlyOnLogin: false, showAfterDelay: true },
       maintenance: { hotkeyEnabled: true, hotkey: 'Ctrl+Alt+Shift+F12', trayConfigEnabled: true },
       security: { allowedOrigins: [], allowExternalLinks: false, allowPopups: false, allowDownloads: false },
@@ -406,6 +406,7 @@ describe('testConnection 通道', () => {
       retryIntervalSec: 3,
       requestTimeoutSec: 20,
       offlinePageEnabled: true,
+      cacheMode: 'keep',
     };
     const result = await call(harness, CONFIG_IPC_CHANNELS.testConnection, 'https://erp.example.com', network);
 
@@ -492,6 +493,7 @@ describe('testTargetConnection', () => {
     retryIntervalSec: 3,
     requestTimeoutSec: 20,
     offlinePageEnabled: true,
+    cacheMode: 'keep',
   };
 
   it('HTTP 响应正常时报告成功与状态码', async () => {

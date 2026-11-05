@@ -11,6 +11,7 @@ import {
   CONFIG_SCHEMA_VERSION,
   type AppConfig,
   type AlwaysOnTopLevel,
+  type CacheMode,
   type InitialState,
   type LogLevel,
   type ProxyMode,
@@ -241,6 +242,7 @@ const networkSchema = z
     retryIntervalSec: positiveIntSchema.default(3),
     requestTimeoutSec: positiveIntSchema.default(20),
     offlinePageEnabled: z.boolean().default(true),
+    cacheMode: z.enum(['keep', 'revalidate', 'clear'] satisfies CacheMode[]).default('keep'),
   })
   .prefault({})
   .superRefine((network, ctx) => {

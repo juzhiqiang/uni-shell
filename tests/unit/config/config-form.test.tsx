@@ -30,6 +30,7 @@ const DEFAULT_NETWORK: AppConfig['network'] = {
   retryIntervalSec: 3,
   requestTimeoutSec: 20,
   offlinePageEnabled: true,
+  cacheMode: 'keep',
 };
 
 function createConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -359,6 +360,7 @@ describe('代理条件字段', () => {
             retryIntervalSec: 3,
             requestTimeoutSec: 20,
             offlinePageEnabled: true,
+            cacheMode: 'keep',
           },
         }),
       ),
@@ -367,6 +369,26 @@ describe('代理条件字段', () => {
     await renderApp();
 
     expect((field('apiProxyHosts') as HTMLTextAreaElement).value).toBe('api.example.com\n*.internal.example.com');
+  });
+
+  it('网页缓存模式回填所选值并随配置保存', async () => {
+    const bridge = installBridge({
+      getConfig: vi.fn(async () =>
+        createConfig({
+          network: { ...DEFAULT_NETWORK, cacheMode: 'clear' },
+        }),
+      ),
+    });
+
+    await renderApp();
+    expect((field('cacheMode') as HTMLSelectElement).value).toBe('clear');
+
+    await selectField('cacheMode', 'revalidate');
+    await submitForm();
+
+    expect(bridge.saveConfig).toHaveBeenCalledTimes(1);
+    const saved = bridge.saveConfig.mock.calls[0][0] as { network: { cacheMode: string } };
+    expect(saved.network.cacheMode).toBe('revalidate');
   });
 
   it('代理模式非直连但未填接口域名时给出非阻塞提示，且不阻止保存', async () => {
@@ -455,6 +477,7 @@ describe('恢复默认值', () => {
             retryIntervalSec: 30,
             requestTimeoutSec: 60,
             offlinePageEnabled: false,
+            cacheMode: 'keep',
           },
           startup: { openAtLogin: true, initialState: 'minimized', delaySec: 120, delayOnlyOnLogin: true, showAfterDelay: false },
           logging: { level: 'debug', retentionDays: 30 },

@@ -15,7 +15,8 @@
     "apiProxyHosts": [],
     "retryIntervalSec": 3,
     "requestTimeoutSec": 20,
-    "offlinePageEnabled": true
+    "offlinePageEnabled": true,
+    "cacheMode": "keep"
   },
   "startup": {
     "openAtLogin": false,

@@ -27,6 +27,7 @@ function makeConfig(overrides: Partial<NetworkConfig> = {}): NetworkConfig {
     retryIntervalSec: 3,
     requestTimeoutSec: 20,
     offlinePageEnabled: true,
+    cacheMode: 'keep',
     ...overrides,
   };
 }

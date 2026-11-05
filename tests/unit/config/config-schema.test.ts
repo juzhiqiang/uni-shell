@@ -73,6 +73,7 @@ describe('config schema', () => {
       ],
       ['startup.initialState', ['tray', 'minimized'], ['hidden', 'shown', '']],
       ['network.proxyMode', ['direct', 'system', 'fixed', 'pac'], ['auto', 'none', 'manual']],
+      ['network.cacheMode', ['keep', 'revalidate', 'clear'], ['always', 'immutable', '']],
       ['logging.level', ['debug', 'info', 'warn', 'error'], ['trace', 'verbose', 'INFO']],
       ['window.closeAction', ['hide', 'quit'], ['close', 'minimize', '']],
     ];
@@ -218,6 +219,7 @@ describe('config schema', () => {
         retryIntervalSec: 3,
         requestTimeoutSec: 20,
         offlinePageEnabled: true,
+        cacheMode: 'keep',
       });
       expect(migrated.startup).toEqual({
         openAtLogin: false,
@@ -495,6 +497,29 @@ describe('config schema', () => {
         expect(result.network.proxyMode).toBe(proxyMode);
         expect(result.network.apiProxyHosts).toEqual([]);
       }
+    });
+  });
+
+  describe('network.cacheMode（网页缓存模式，规格 §7）', () => {
+    it('默认 keep（不干预缓存）', () => {
+      const migrated = migrateConfig({ targetUrl: 'https://example.com' });
+      expect(migrated.network.cacheMode).toBe('keep');
+    });
+
+    it('显式取值迁移后保留', () => {
+      for (const cacheMode of ['keep', 'revalidate', 'clear']) {
+        const result = migrateConfig({ targetUrl: 'https://example.com', network: { cacheMode } });
+        expect(result.network.cacheMode).toBe(cacheMode);
+      }
+    });
+
+    it('旧配置缺少该字段时按 keep 迁移，不破坏既有配置', () => {
+      const result = migrateConfig({
+        targetUrl: 'https://example.com',
+        network: { proxyMode: 'fixed', proxyServer: 'proxy.example.com:8080', apiProxyHosts: ['api.example.com'] },
+      });
+      expect(result.network.cacheMode).toBe('keep');
+      expect(result.network.apiProxyHosts).toEqual(['api.example.com']);
     });
   });
 
