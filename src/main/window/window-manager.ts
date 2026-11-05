@@ -20,9 +20,16 @@ import { posix, win32 } from 'node:path';
 
 import type { BrowserWindow } from 'electron';
 
-import type { AppConfig, InitialState, SecurityConfig, WindowConfig, WindowMode } from '../config/config-types';
+import type { AppConfig, CacheMode, InitialState, SecurityConfig, WindowConfig, WindowMode } from '../config/config-types';
 import { mapAlwaysOnTopLevel } from '../platform/capability-detector';
 import type { MappedWindowLevel, PlatformCapabilities } from '../platform/platform-adapter';
+import {
+  clearRemoteCache,
+  installCachePolicy,
+  resolveCacheBehavior,
+  type CachePolicyHandle,
+  type CachePolicySession,
+} from '../network/cache-policy';
 import {
   createLocalConfigSecurityPolicy,
   installNavigationGuards,
@@ -184,7 +191,9 @@ export type WindowManagerEvent =
       field: 'mode' | 'alwaysOnTop' | 'display';
       reason: string;
     }
-  | { type: 'close-action'; window: 'main'; action: 'hide' | 'quit' };
+  | { type: 'close-action'; window: 'main'; action: 'hide' | 'quit' }
+  | { type: 'remote-cache-cleared'; mode: CacheMode }
+  | { type: 'remote-cache-clear-failed'; mode: CacheMode; message: string };
 
 export interface WindowManagerDeps<T extends BrowserWindowLike = BrowserWindowLike> {
   /** 创建窗口的工厂；生产环境注入 `(options) => new BrowserWindow(options)`。 */
@@ -351,6 +360,8 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
   private readonly guards = new Map<T, NavigationGuardHandle>();
   private readonly reveals = new Map<T, InitialReveal<T>>();
   private remoteSessionPolicy: SessionPolicyHandle | null = null;
+  /** 远程会话缓存策略句柄（规格 v2.1.5 §7 `network.cacheMode`）；按会话幂等持有。 */
+  private remoteCachePolicy: CachePolicyHandle | undefined;
   private configSessionPolicy: SessionPolicyHandle | null = null;
   private security: SecurityConfig = createLocalConfigSecurityPolicy();
   private windowPolicy: { window: WindowConfig; capabilities: PlatformCapabilities } | null = null;
@@ -415,6 +426,20 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     this.applyWindowPolicy(config.window, this.deps.capabilities);
     this.registerMainWindowLifecycle(window);
     this.emit({ type: 'main-window-created' });
+
+    // 缓存策略（规格 v2.1.5 §7）：clear 模式必须在首次 loadURL 前完成清除，
+    // 否则强缓存/旧 Service Worker 会在页面更新后继续供给旧版甚至白屏。
+    const cacheSession = this.cacheSessionOf(window);
+    this.attachCachePolicy(cacheSession, config.network.cacheMode);
+    if (cacheSession !== undefined && resolveCacheBehavior(config.network.cacheMode).clearOnStart) {
+      try {
+        await clearRemoteCache(cacheSession);
+        this.emit({ type: 'remote-cache-cleared', mode: config.network.cacheMode });
+      } catch (error) {
+        // 清除失败只记录并继续加载：缓存问题不应阻断启动（规格 §7）。
+        this.emit({ type: 'remote-cache-clear-failed', mode: config.network.cacheMode, message: describeError(error) });
+      }
+    }
 
     try {
       await window.loadURL(config.targetUrl);
@@ -537,6 +562,33 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     this.remoteSessionPolicy?.update(effectiveSecurity);
   }
 
+  /**
+   * 取窗口会话的缓存策略面。
+   *
+   * `BrowserWindowLike.webContents.session` 只声明了 `GuardSession`（导航守卫所需
+   * 最小面）；真实 Electron `Session` 结构上满足 `CachePolicySession`，与
+   * `window-port.ts` 的 Electron 边界转换同一手法。
+   */
+  private cacheSessionOf(window: T): CachePolicySession | undefined {
+    return window.webContents.session as unknown as CachePolicySession | undefined;
+  }
+
+  /** 按会话幂等安装/切换缓存策略；句柄跨窗口创建周期持有（分区持久，策略随会话存活）。 */
+  private attachCachePolicy(session: CachePolicySession | undefined, mode: CacheMode): void {
+    if (!session) return;
+    if (this.remoteCachePolicy) {
+      this.remoteCachePolicy.update(mode);
+      return;
+    }
+    this.remoteCachePolicy = installCachePolicy(session, mode);
+  }
+
+  /** 规格 §5.2：保存配置切换 `network.cacheMode` 时请求头策略即时生效；clear 的清除在下次启动执行。 */
+  updateCachePolicy(mode: CacheMode): void {
+    const main = this.getMainWindow();
+    this.attachCachePolicy(main === null ? undefined : this.cacheSessionOf(main), mode);
+  }
+
   /** 退出流程开始：之后的窗口关闭不再被 close-to-hide 拦截。 */
   beginShutdown(): void {
     this.quitting = true;
@@ -551,6 +603,8 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     if (main !== null && !main.isDestroyed()) main.close();
     this.remoteSessionPolicy?.dispose();
     this.remoteSessionPolicy = null;
+    this.remoteCachePolicy?.dispose();
+    this.remoteCachePolicy = undefined;
     this.configSessionPolicy?.dispose();
     this.configSessionPolicy = null;
   }

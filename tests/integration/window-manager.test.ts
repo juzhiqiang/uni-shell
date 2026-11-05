@@ -112,11 +112,53 @@ class FakeEvent {
   }
 }
 
+type BeforeSendHeadersListener = (
+  details: { requestHeaders: Record<string, string> },
+  callback: (response: { requestHeaders: Record<string, string> }) => void,
+) => void;
+
+/** `webRequest` 假实现：同一 filter 以最后一次注册（含传 `null` 移除）为准（Electron 语义）。 */
+class FakeWebRequest {
+  readonly registrations: Array<{ filter: { urls: string[] }; listener: BeforeSendHeadersListener | null }> = [];
+
+  onBeforeSendHeaders(filter: { urls: string[] }, listener: BeforeSendHeadersListener | null): void {
+    this.registrations.push({ filter, listener });
+  }
+
+  /** 模拟 Electron：把请求交给该 filter 的生效监听，返回最终请求头。 */
+  emit(details: { requestHeaders: Record<string, string> }): Record<string, string> {
+    let headers = { ...details.requestHeaders };
+    for (const listener of this.effectiveListeners()) {
+      listener(details, (response) => {
+        headers = response.requestHeaders;
+      });
+    }
+    return headers;
+  }
+
+  activeListenerCount(): number {
+    return this.effectiveListeners().length;
+  }
+
+  private effectiveListeners(): BeforeSendHeadersListener[] {
+    const latest = new Map<{ urls: string[] }, BeforeSendHeadersListener | null>();
+    for (const registration of this.registrations) latest.set(registration.filter, registration.listener);
+    return [...latest.values()].filter((listener): listener is BeforeSendHeadersListener => listener !== null);
+  }
+}
+
 class FakeSession implements GuardSession {
   readonly events = new Map<string, Array<(...args: unknown[]) => void>>();
+  readonly webRequest = new FakeWebRequest();
+  readonly clearCalls: string[] = [];
   permissionHandler: ((contents: unknown, permission: string, callback: (granted: boolean) => void) => void) | null =
     null;
   permissionHandlerRegisterCount = 0;
+  /** 清除调用失败时抛出，用于验证失败不阻断加载。 */
+  failClearCache = false;
+
+  /** `sequence` 与窗口共用，用于断言「先清除、后加载」的顺序。 */
+  constructor(private readonly sequence?: string[]) {}
 
   on(event: 'will-download', listener: (...args: unknown[]) => void): unknown {
     const list = this.events.get(event) ?? [];
@@ -158,6 +200,18 @@ class FakeSession implements GuardSession {
       granted = value;
     });
     return granted;
+  }
+
+  async clearCache(): Promise<void> {
+    this.clearCalls.push('clearCache');
+    this.sequence?.push('clearCache');
+    if (this.failClearCache) throw new Error('磁盘占用');
+  }
+
+  async clearStorageData(options?: { storages?: string[] }): Promise<void> {
+    const entry = `clearStorageData:${(options?.storages ?? []).join(',')}`;
+    this.clearCalls.push(entry);
+    this.sequence?.push(entry);
   }
 }
 
@@ -218,13 +272,14 @@ class FakeWindow implements BrowserWindowLike {
   alwaysOnTop: { flag: boolean; level?: string } = { flag: false };
   loadFailure: Error | null = null;
 
-  constructor(session = new FakeSession()) {
+  constructor(session = new FakeSession(), private readonly sequence?: string[]) {
     this.webContents = new FakeWebContents(session);
   }
 
   async loadURL(url: string): Promise<void> {
     this.calls.push(`loadURL:${url}`);
     this.loadURLCalls.push(url);
+    this.sequence?.push(`loadURL:${url}`);
     if (this.loadFailure) throw this.loadFailure;
   }
 
@@ -356,6 +411,8 @@ interface ManagerHarness {
   created: FakeWindow[];
   optionsLog: BrowserWindowConstructorOptions[];
   events: WindowManagerEvent[];
+  /** 会话清除与窗口加载的统一时间线，用于断言先后顺序。 */
+  sequence: string[];
   quitApp: ReturnType<typeof vi.fn>;
   openExternal: ReturnType<typeof vi.fn>;
   getSession(partition?: string): FakeSession;
@@ -375,6 +432,7 @@ function createManager(
   const created: FakeWindow[] = [];
   const optionsLog: BrowserWindowConstructorOptions[] = [];
   const events: WindowManagerEvent[] = [];
+  const sequence: string[] = [];
   const sessions = new Map<string, FakeSession>();
   const quitApp = vi.fn();
   const openExternal = vi.fn();
@@ -383,7 +441,7 @@ function createManager(
     const key = partition ?? 'default';
     let s = sessions.get(key);
     if (!s) {
-      s = new FakeSession();
+      s = new FakeSession(sequence);
       sessions.set(key, s);
     }
     return s;
@@ -393,7 +451,7 @@ function createManager(
     createWindow: (windowOptions) => {
       optionsLog.push(windowOptions);
       const partition = windowOptions.webPreferences?.partition as string | undefined;
-      const window = new FakeWindow(getSession(partition));
+      const window = new FakeWindow(getSession(partition), sequence);
       created.push(window);
       return window;
     },
@@ -413,6 +471,7 @@ function createManager(
     created,
     optionsLog,
     events,
+    sequence,
     getSession,
     quitApp,
     openExternal,
@@ -1209,5 +1268,97 @@ describe('会话分区与 SessionPolicy 隔离', () => {
 
     // 配置窗口关闭后，主窗口下载依然生效
     expect(remoteSession.emitDownload({ getURL: () => 'https://app.example.com/report.pdf' })).toBe(false);
+  });
+});
+
+describe('网页缓存模式（network.cacheMode，规格 v2.1.5 §7）', () => {
+  function cacheModeConfig(cacheMode: AppConfig['network']['cacheMode']): AppConfig {
+    return appConfig({ network: { ...createDefaultConfig('https://app.example.com').network, cacheMode } });
+  }
+
+  it('默认 keep：不注册请求头监听，也不清除缓存', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(appConfig());
+
+    const remote = harness.getSession('persist:remote');
+    expect(remote.webRequest.activeListenerCount()).toBe(0);
+    expect(remote.clearCalls).toEqual([]);
+  });
+
+  it('revalidate：注册监听并改写请求头，但不清除缓存', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(cacheModeConfig('revalidate'));
+
+    const remote = harness.getSession('persist:remote');
+    expect(remote.webRequest.activeListenerCount()).toBe(1);
+    const headers = remote.webRequest.emit({
+      requestHeaders: { Cookie: 'session=1', 'Cache-Control': 'max-age=600' },
+    });
+    expect(headers['Cache-Control']).toBe('no-cache');
+    expect(headers.Pragma).toBe('no-cache');
+    expect(headers.Cookie).toBe('session=1');
+    expect(remote.clearCalls).toEqual([]);
+  });
+
+  it('clear：先清除缓存与 Service Worker，再加载目标页', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(cacheModeConfig('clear'));
+
+    expect(harness.sequence).toEqual([
+      'clearStorageData:cachestorage,serviceworkers',
+      'clearCache',
+      'loadURL:https://app.example.com',
+    ]);
+    expect(harness.events).toContainEqual({ type: 'remote-cache-cleared', mode: 'clear' });
+  });
+
+  it('clear：清除失败不阻断页面加载，发出 remote-cache-clear-failed', async () => {
+    const harness = createManager();
+    const remote = harness.getSession('persist:remote');
+    remote.failClearCache = true;
+
+    await harness.manager.createMainWindow(cacheModeConfig('clear'));
+
+    expect(harness.sequence).toEqual([
+      'clearStorageData:cachestorage,serviceworkers',
+      'clearCache',
+      'loadURL:https://app.example.com',
+    ]);
+    const failed = harness.events.find((event) => event.type === 'remote-cache-clear-failed');
+    expect(failed).toMatchObject({ mode: 'clear', message: '磁盘占用' });
+  });
+
+  it('复用已存在的窗口不重复清除缓存，监听不重复注册', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(cacheModeConfig('clear'));
+    await harness.manager.createMainWindow(cacheModeConfig('clear'));
+
+    const remote = harness.getSession('persist:remote');
+    expect(remote.clearCalls).toEqual(['clearStorageData:cachestorage,serviceworkers', 'clearCache']);
+    expect(remote.webRequest.activeListenerCount()).toBe(1);
+  });
+
+  it('updateCachePolicy 热应用：keep 建窗后切换到 revalidate 即注册监听，切回 keep 即移除', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(appConfig());
+    const remote = harness.getSession('persist:remote');
+
+    expect(remote.webRequest.activeListenerCount()).toBe(0);
+
+    harness.manager.updateCachePolicy('revalidate');
+    expect(remote.webRequest.activeListenerCount()).toBe(1);
+    expect(remote.webRequest.emit({ requestHeaders: {} }).Pragma).toBe('no-cache');
+
+    harness.manager.updateCachePolicy('keep');
+    expect(remote.webRequest.activeListenerCount()).toBe(0);
+    expect(remote.webRequest.emit({ requestHeaders: { Accept: 'text/html' } })).toEqual({ Accept: 'text/html' });
+  });
+
+  it('closeAll 移除请求头监听', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(cacheModeConfig('revalidate'));
+
+    harness.manager.closeAll();
+    expect(harness.getSession('persist:remote').webRequest.activeListenerCount()).toBe(0);
   });
 });

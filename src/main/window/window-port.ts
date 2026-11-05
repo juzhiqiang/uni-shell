@@ -86,6 +86,8 @@ export interface WindowPortManager<W = BrowserWindow> {
   closeAll(): void;
   applyWindowPolicy(config: AppConfig['window'], capabilities: PlatformCapabilities): void;
   updateSecurity(security: AppConfig['security'], targetUrl?: string): void;
+  /** 规格 §5.2：热应用 `network.cacheMode` 的请求头策略。 */
+  updateCachePolicy(mode: AppConfig['network']['cacheMode']): void;
 }
 
 export interface ElectronSessionNetworkTarget {
@@ -135,6 +137,8 @@ export function createWindowPortAdapter<W extends MinimalMainWindowTarget = Brow
     applyConfig(config: AppConfig) {
       windowManager.applyWindowPolicy(config.window, options.capabilities);
       windowManager.updateSecurity(config.security, config.targetUrl);
+      // 规格 §5.2：cacheMode 的请求头策略热应用；clear 的清除动作在下次启动执行。
+      windowManager.updateCachePolicy(config.network.cacheMode);
     },
 
     async showAndFocusMain() {
