@@ -27,6 +27,7 @@ import {
 } from './main/platform/config-paths';
 import { detectPlatformCapabilities } from './main/platform/capability-detector';
 import {
+  createElectronCertificatePolicyPort,
   createElectronPowerMonitorPort,
   createElectronProxyPort,
   createElectronSingleInstancePort,
@@ -232,6 +233,13 @@ async function bootstrap(): Promise<void> {
     loginItem: createElectronLoginItemPort(),
     shortcutTarget: createShortcutTarget(mainWindowChannel),
     proxy: createElectronProxyPort(),
+    // 规格 v2.1.7 §7、§12：仅远程会话生效；放行记录只含主机名与校验结果，
+    // 由 logger 统一脱敏（不含完整网址与查询参数）。
+    certificatePolicy: createElectronCertificatePolicyPort({
+      onBypass: (record) => {
+        logger.warn('certificate-error-accepted', record);
+      },
+    }),
     confirmProxyFailure: async (mode) => {
       const result = await dialog.showMessageBox({
         type: 'warning',

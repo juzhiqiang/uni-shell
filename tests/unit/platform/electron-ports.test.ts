@@ -2,6 +2,7 @@ import type { Session } from 'electron';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createElectronCertificatePolicyPort,
   createElectronPowerMonitorPort,
   createElectronProxyPort,
   createElectronSingleInstancePort,
@@ -64,6 +65,50 @@ describe('electron-ports', () => {
       await port.apply(config);
 
       expect(mockApplyProxy).toHaveBeenCalledWith(mockSession, config);
+    });
+  });
+
+  describe('createElectronCertificatePolicyPort（规格 v2.1.7 §7）', () => {
+    it('开启时经远程会话安装证书校验过程，放行并透出记录', () => {
+      const procs: Array<((request: unknown, callback: (result: number) => void) => void) | null> = [];
+      const records: unknown[] = [];
+      const port = createElectronCertificatePolicyPort({
+        sessionProvider: () =>
+          ({
+            setCertificateVerifyProc: (proc) => procs.push(proc),
+          }) as unknown as Session,
+        onBypass: (record) => records.push(record),
+      });
+
+      const applied = port.apply({ ...createDefaultConfig('https://example.com').network, allowUntrustedCertificates: true });
+
+      expect(applied).toEqual({ installed: true });
+      const proc = procs[procs.length - 1];
+      expect(proc).not.toBeNull();
+
+      let result = Number.NaN;
+      proc?.({ hostname: 'erp.internal', verificationResult: 'CERT_AUTHORITY_INVALID', errorCode: -202 }, (value) => {
+        result = value;
+      });
+      expect(result).toBe(0);
+      expect(records).toEqual([
+        { hostname: 'erp.internal', verificationResult: 'CERT_AUTHORITY_INVALID', errorCode: -202 },
+      ]);
+    });
+
+    it('关闭时恢复默认校验（setCertificateVerifyProc(null)）', () => {
+      const procs: Array<((request: unknown, callback: (result: number) => void) => void) | null> = [];
+      const port = createElectronCertificatePolicyPort({
+        sessionProvider: () =>
+          ({
+            setCertificateVerifyProc: (proc) => procs.push(proc),
+          }) as unknown as Session,
+      });
+
+      const applied = port.apply(createDefaultConfig('https://example.com').network);
+
+      expect(applied).toEqual({ installed: false });
+      expect(procs).toEqual([null]);
     });
   });
 

@@ -1,6 +1,13 @@
 import { app, powerMonitor, session } from 'electron';
 import type { SingleInstancePort } from '../instance/single-instance';
 import type { ProxyPort } from '../network/proxy-manager';
+import {
+  applyCertificateVerifyPolicy,
+  type CertificateBypassRecord,
+  type CertificatePolicyNetwork,
+  type CertificatePolicyPort,
+  type CertificateVerifySession,
+} from '../network/cert-policy';
 import type { PowerMonitorPort } from './power-monitor';
 import type { NetworkConfig } from '../config/config-types';
 import { applyProxy } from '../network/proxy-manager';
@@ -39,6 +46,36 @@ export function createElectronProxyPort(options: CreateElectronProxyPortOptions 
 
   return {
     apply: (config: NetworkConfig) => apply(sessionProvider(partition), config),
+  };
+}
+
+export interface CreateElectronCertificatePolicyPortOptions {
+  /** 默认远程业务会话分区 `persist:remote`；测试注入假会话。 */
+  partition?: string;
+  sessionProvider?: (partition: string) => CertificateVerifySession;
+  /** 放行不受信任证书时的记录出口；生产环境接日志（规格 §12）。 */
+  onBypass?: (record: CertificateBypassRecord) => void;
+}
+
+/**
+ * 证书校验策略端口：仅远程业务会话生效（规格 v2.1.7 §7、§11；
+ * `rules/security.md`「证书校验绕过只允许经显式配置开关按会话启用」）。
+ *
+ * 开启时安装 `setCertificateVerifyProc` 放行全部证书错误；关闭时传 `null`
+ * 恢复 Chromium 默认校验。本地配置会话（`local-config`）不使用本端口，
+ * 始终走系统默认校验。
+ */
+export function createElectronCertificatePolicyPort(
+  options: CreateElectronCertificatePolicyPortOptions = {},
+): CertificatePolicyPort {
+  const partition = options.partition ?? REMOTE_PARTITION;
+  const sessionProvider = options.sessionProvider ?? ((part) => session.fromPartition(part));
+
+  return {
+    apply: (network: CertificatePolicyNetwork) =>
+      applyCertificateVerifyPolicy(sessionProvider(partition), network.allowUntrustedCertificates === true, {
+        onBypass: options.onBypass,
+      }),
   };
 }
 

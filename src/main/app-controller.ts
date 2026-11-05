@@ -22,6 +22,7 @@ import type { AppConfig } from './config/config-schema';
 import type { NetworkConfig } from './config/config-types';
 import type { ConfigService } from './config/config-service';
 import type { Logger } from './logging/logger';
+import type { CertificatePolicyPort } from './network/cert-policy';
 import {
   DEFAULT_CRASH_WINDOW_MS,
   decideCrashRecovery,
@@ -113,6 +114,8 @@ export interface AppControllerDeps {
   shortcutTarget?: ShortcutTarget;
   /** 代理应用端口；提供时启动流程在创建主窗口前应用代理（规格 §7）。 */
   proxy?: ProxyPort;
+  /** 证书校验策略端口；提供时启动与配置保存后应用（规格 v2.1.7 §7）。 */
+  certificatePolicy?: CertificatePolicyPort;
   /** 启动代理失败确认端口；缺少确认端口时按拒绝处理。 */
   confirmProxyFailure?: ConfirmProxyFailure;
   /** 电源监听端口；提供时记录休眠/唤醒诊断并在唤醒后重载页面（规格 §14.1）。 */
@@ -205,6 +208,11 @@ export class AppController {
         JSON.stringify(previous.network) !== JSON.stringify(config.network)) {
       const applied = await this.applyProxyConfig(config.network);
       if (!applied) warning = '网络代理配置未能应用，请查看日志。';
+    }
+    // 规格 v2.1.7 §7：证书放行开关切换时热切换校验策略（页面重载由
+    // config-diff 的 reload 分级负责，使开关对已失败的页面立即生效）。
+    if (previous === undefined || previous.network.allowUntrustedCertificates !== config.network.allowUntrustedCertificates) {
+      this.applyCertificatePolicy(config.network);
     }
     if (previous === undefined || previous.network.retryIntervalSec !== config.network.retryIntervalSec ||
         previous.network.offlinePageEnabled !== config.network.offlinePageEnabled) {
@@ -311,6 +319,8 @@ export class AppController {
       return;
     }
     this.startRetryController();
+    // 证书校验策略同样必须先于目标页面加载生效（规格 v2.1.7 §7）。
+    this.applyCertificatePolicy(result.config.network);
     await this.applyStartupStrategy();
   }
 
@@ -539,6 +549,27 @@ export class AppController {
         decision: proceed ? 'continue' : 'configure',
       });
       return proceed;
+    }
+  }
+
+  /**
+   * 规格 v2.1.7 §7：应用不受信任证书放行策略。
+   *
+   * 启动流程在创建主窗口前调用（与代理同级）；保存配置切换
+   * `network.allowUntrustedCertificates` 时热切换。与代理不同，应用失败
+   * 不阻断启动：校验策略装不上时按 Chromium 默认校验继续，页面行为与
+   * 升级前一致（证书有问题的站点打不开），仅记录诊断。
+   */
+  applyCertificatePolicy(network: NetworkConfig): void {
+    const port = this.deps.certificatePolicy;
+    if (!port) return;
+
+    const log = this.deps.log ?? noopLogger;
+    try {
+      const result = port.apply(network);
+      log.info('certificate-policy-applied', { installed: result.installed });
+    } catch (error) {
+      log.error('certificate-policy-apply-failed', { message: describeError(error) });
     }
   }
 

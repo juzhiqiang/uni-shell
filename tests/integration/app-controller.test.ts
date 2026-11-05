@@ -359,6 +359,73 @@ describe('AppController 启动', () => {
     expect(stages).toEqual(['configLoaded', 'proxyApplied']);
   });
 
+  describe('证书校验策略（规格 v2.1.7 §7）', () => {
+    function configWithCertPolicy(allowUntrustedCertificates: boolean) {
+      const base = createDefaultConfig('https://example.com');
+      return { ...base, network: { ...base.network, allowUntrustedCertificates } };
+    }
+
+    it('启动时应用证书放行策略并记录诊断', async () => {
+      const certificatePolicy = { apply: vi.fn(() => ({ installed: true })) };
+      const { deps, logs } = createDeps({
+        loadConfig: async () => loadedResult(configWithCertPolicy(true)),
+        certificatePolicy,
+      });
+
+      await new AppController(deps).start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+      expect(certificatePolicy.apply).toHaveBeenCalledTimes(1);
+      expect(certificatePolicy.apply.mock.calls[0][0].allowUntrustedCertificates).toBe(true);
+      expect(
+        logs.some(
+          (entry) =>
+            entry.event === 'certificate-policy-applied' &&
+            (entry.data as { installed?: boolean } | undefined)?.installed === true,
+        ),
+      ).toBe(true);
+    });
+
+    it('保存切换 allowUntrustedCertificates 时热切换策略，其他字段变更不重复应用', async () => {
+      const certificatePolicy = { apply: vi.fn(() => ({ installed: false })) };
+      const { deps } = createDeps({ certificatePolicy });
+      const controller = new AppController(deps);
+
+      await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+      certificatePolicy.apply.mockClear();
+
+      const hot = structuredClone(configWithCertPolicy(false));
+      hot.network.retryIntervalSec = 9;
+      await controller.applySavedConfig(hot, false);
+      expect(certificatePolicy.apply).not.toHaveBeenCalled();
+
+      await controller.applySavedConfig(configWithCertPolicy(true), false);
+      expect(certificatePolicy.apply).toHaveBeenCalledTimes(1);
+      expect(certificatePolicy.apply.mock.calls[0][0].allowUntrustedCertificates).toBe(true);
+    });
+
+    it('未注入证书策略端口时不阻断启动', async () => {
+      const { deps, fakeWindow } = createDeps();
+
+      await new AppController(deps).start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+      expect(fakeWindow.calls).toContain('createMainWindow');
+    });
+
+    it('证书策略应用失败时记录诊断且不阻断启动与页面加载', async () => {
+      const certificatePolicy = {
+        apply: vi.fn(() => {
+          throw new Error('session unavailable');
+        }),
+      };
+      const { deps, fakeWindow, logs } = createDeps({ certificatePolicy });
+
+      await new AppController(deps).start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+      expect(fakeWindow.calls).toContain('createMainWindow');
+      expect(logs.some((entry) => entry.event === 'certificate-policy-apply-failed')).toBe(true);
+    });
+  });
+
   it('配置不可用时也记录配置加载阶段', async () => {
     const stages: string[] = [];
     const { deps } = createDeps({
