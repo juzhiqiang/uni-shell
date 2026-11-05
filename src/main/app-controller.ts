@@ -79,6 +79,8 @@ export interface WindowPort {
   hideMain(): Promise<void>;
   /** 重新加载目标网页（托盘「重新加载网页」、唤醒恢复）。 */
   reloadMain(): Promise<void>;
+  /** 清除远程会话缓存后重载（托盘「清除缓存并重载」，规格 §10）；返回 false 表示清除失败。 */
+  clearRemoteCache?(): Promise<boolean>;
   applyConfig?(config: AppConfig): void;
   /** 展示本地离线页（规格 §7 的 offlinePageEnabled）；未提供时不展示。 */
   showOfflinePage?(): Promise<void> | void;
@@ -384,6 +386,8 @@ export class AppController {
       openConfig: () => this.deps.window.openConfigWindow('用户从托盘打开配置界面'),
       configEnabled: this.config?.maintenance.trayConfigEnabled ?? true,
       reload: () => this.reloadMain(),
+      // 规格 §10：清除远程会话缓存后重载；清除失败降级为普通重载。
+      clearCacheReload: () => this.reloadWithCacheClear(),
       // 返回关闭流程的 Promise：即发即弃的调用方不受影响，需要等待
       // 日志刷新完成的调用方（如退出流程）可以 await。
       quit: () => this.shutdown(),
@@ -402,16 +406,36 @@ export class AppController {
   }
 
   private async reloadMain(): Promise<void> {
-    // 用户显式触发（托盘「重新加载网页」、唤醒恢复）即恢复自动重载资格：
-    // 清空崩溃窗口与降级状态，重新获得完整配额（规格 §7）。
-    this.crashHistory = [];
-    this.crashRecoveryStopped = false;
-    this.clearCrashReloadTimer();
+    this.prepareExplicitReload();
     if (this.retryController?.isRetrying) {
       this.retryController.retryNow();
       return;
     }
     await this.deps.window.reloadMain();
+  }
+
+  /**
+   * 托盘「清除缓存并重载」（规格 §10）。
+   *
+   * 与显式重载相同的前置（恢复自动重载资格），先尽力清除远程会话缓存再重载，
+   * 用于网页更新后旧缓存或旧 Service Worker 导致白屏的现场恢复。清除失败由
+   * 窗口层记录 `cache-clear-failed` 并返回 false，此处降级为普通重载，不阻断。
+   */
+  private async reloadWithCacheClear(): Promise<void> {
+    this.prepareExplicitReload();
+    await this.deps.window.clearRemoteCache?.();
+    if (this.retryController?.isRetrying) {
+      this.retryController.retryNow();
+      return;
+    }
+    await this.deps.window.reloadMain();
+  }
+
+  /** 用户显式触发重载的前置：恢复自动重载资格（规格 §7）。 */
+  private prepareExplicitReload(): void {
+    this.crashHistory = [];
+    this.crashRecoveryStopped = false;
+    this.clearCrashReloadTimer();
   }
 
   /** 规格 §10：安装仅在客户端窗口获得焦点时生效的维护快捷键。 */

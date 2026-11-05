@@ -17,6 +17,8 @@ export interface TrayActions {
   openConfig(): void | Promise<void>;
   configEnabled?: boolean;
   reload(): void | Promise<void>;
+  /** 清除远程会话缓存后重载目标页（规格 §10）；用于网页更新后旧缓存白屏的现场恢复。 */
+  clearCacheReload(): void | Promise<void>;
   quit(): void | Promise<void>;
 }
 

@@ -35,6 +35,7 @@ describe('window-port', () => {
 
     let mainWindowInstance: typeof mockMain | null = mockMain;
     let configWindowInstance: object | null = null;
+    let clearCacheResult = true;
 
     const manager: WindowPortManager<typeof mockMain> = {
       createMainWindow: vi.fn(async () => {
@@ -55,9 +56,15 @@ describe('window-port', () => {
         mainWindowInstance = null;
         configWindowInstance = null;
       }),
+      clearRemoteCache: vi.fn(async () => clearCacheResult),
     };
 
-    return { manager, mockMain, setMainWindow: (val: typeof mockMain | null) => { mainWindowInstance = val; } };
+    return {
+      manager,
+      mockMain,
+      setMainWindow: (val: typeof mockMain | null) => { mainWindowInstance = val; },
+      setClearCacheResult: (val: boolean) => { clearCacheResult = val; },
+    };
   }
 
   it('createMainWindow 触发 session.preconnect 并调用 windowManager', async () => {
@@ -120,6 +127,22 @@ describe('window-port', () => {
     await adapter.reloadMain();
     expect(manager.createMainWindow).toHaveBeenCalled();
     expect(manager.showMainWindow).toHaveBeenCalled();
+  });
+
+  it('clearRemoteCache 转发 windowManager 的清除结果', async () => {
+    const { manager, setClearCacheResult } = createMockWindowManager();
+    const configService = createMockConfigService('https://app.example.com/');
+    const adapter = createWindowPortAdapter({
+      windowManager: manager,
+      configService,
+      sessionProvider: () => ({ preconnect: vi.fn(), fetch: vi.fn() }),
+    });
+
+    expect(await adapter.clearRemoteCache()).toBe(true);
+    expect(manager.clearRemoteCache).toHaveBeenCalledTimes(1);
+
+    setClearCacheResult(false);
+    expect(await adapter.clearRemoteCache()).toBe(false);
   });
 
   it('showOfflinePage 委托给 loadOffline', async () => {

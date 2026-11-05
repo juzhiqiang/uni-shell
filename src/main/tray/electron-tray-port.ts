@@ -47,6 +47,7 @@ export function createElectronTrayPort(
         const menu = menuFactory.buildFromTemplate([
           ...(actions.configEnabled === false ? [] : [{ label: '打开配置界面', click: () => void actions.openConfig() }]),
           { label: '重新加载网页', click: () => void actions.reload() },
+          { label: '清除缓存并重载', click: () => void actions.clearCacheReload() },
           { label: '立即显示窗口', click: () => void actions.showWindow() },
           { type: 'separator' },
           { label: '退出程序', click: () => void quitAction() },

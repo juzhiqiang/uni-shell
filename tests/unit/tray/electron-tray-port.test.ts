@@ -57,6 +57,7 @@ describe('electron-tray-port', () => {
     const actions: TrayActions = {
       openConfig: vi.fn(),
       reload: vi.fn(),
+      clearCacheReload: vi.fn(),
       showWindow: vi.fn(),
       quit: vi.fn(),
     };
@@ -66,13 +67,14 @@ describe('electron-tray-port', () => {
     expect(mockTray.toolTip).toBe('UniShell');
     expect(mockTray.contextMenu).toEqual({ template: builtTemplate });
 
-    // 检查 4 个固定菜单项与分隔线
-    expect(builtTemplate).toHaveLength(5);
+    // 检查 5 个固定菜单项与分隔线
+    expect(builtTemplate).toHaveLength(6);
     expect(builtTemplate[0].label).toBe('打开配置界面');
     expect(builtTemplate[1].label).toBe('重新加载网页');
-    expect(builtTemplate[2].label).toBe('立即显示窗口');
-    expect(builtTemplate[3].type).toBe('separator');
-    expect(builtTemplate[4].label).toBe('退出程序');
+    expect(builtTemplate[2].label).toBe('清除缓存并重载');
+    expect(builtTemplate[3].label).toBe('立即显示窗口');
+    expect(builtTemplate[4].type).toBe('separator');
+    expect(builtTemplate[5].label).toBe('退出程序');
 
     // 触发菜单动作
     builtTemplate[0].click?.();
@@ -82,9 +84,12 @@ describe('electron-tray-port', () => {
     expect(actions.reload).toHaveBeenCalled();
 
     builtTemplate[2].click?.();
+    expect(actions.clearCacheReload).toHaveBeenCalled();
+
+    builtTemplate[3].click?.();
     expect(actions.showWindow).toHaveBeenCalled();
 
-    builtTemplate[4].click?.();
+    builtTemplate[5].click?.();
     expect(actions.quit).toHaveBeenCalled();
 
     // 托盘单击事件表现为「立即显示窗口」
@@ -117,12 +122,13 @@ describe('electron-tray-port', () => {
     const actions: TrayActions = {
       openConfig: vi.fn(),
       reload: vi.fn(),
+      clearCacheReload: vi.fn(),
       showWindow: vi.fn(),
       quit: vi.fn(),
     };
 
     port.create(actions);
-    builtTemplate[4].click?.();
+    builtTemplate[5].click?.();
     expect(customQuit).toHaveBeenCalled();
     expect(actions.quit).not.toHaveBeenCalled();
   });
@@ -139,6 +145,7 @@ describe('electron-tray-port', () => {
     const actions: TrayActions = {
       openConfig: vi.fn(),
       reload: vi.fn(),
+      clearCacheReload: vi.fn(),
       showWindow: vi.fn(),
       quit: vi.fn(),
     };

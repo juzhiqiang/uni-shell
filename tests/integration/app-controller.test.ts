@@ -52,6 +52,7 @@ function createFakeWindow() {
   let configWindowOpen = false;
   let mainVisible = false;
   let mainCreated = false;
+  let clearCacheResult = true;
 
   const window: WindowPort = {
     async openConfigWindow(reason) {
@@ -65,6 +66,10 @@ function createFakeWindow() {
     },
     async reloadMain() {
       calls.push('reloadMain');
+    },
+    async clearRemoteCache() {
+      calls.push('clearRemoteCache');
+      return clearCacheResult;
     },
     async showOfflinePage() {
       calls.push('showOfflinePage');
@@ -95,6 +100,10 @@ function createFakeWindow() {
     },
     setMainVisible(value: boolean) {
       mainVisible = value;
+    },
+    /** 设置「清除缓存并重载」中清除步骤的返回值（false 模拟清除失败）。 */
+    setClearCacheResult(value: boolean) {
+      clearCacheResult = value;
     },
     get mainCreated() {
       return mainCreated;
@@ -772,7 +781,7 @@ describe('AppController 二次启动唤醒', () => {
 });
 
 describe('AppController 托盘与关闭', () => {
-  it('创建托盘并暴露四个固定动作', async () => {
+  it('创建托盘并暴露五个固定动作', async () => {
     const trayFake = createTrayFake();
     const { deps } = createDeps({ tray: trayFake.tray });
     const controller = new AppController(deps);
@@ -783,7 +792,51 @@ describe('AppController 托盘与关闭', () => {
     expect(typeof trayFake.actions?.showWindow).toBe('function');
     expect(typeof trayFake.actions?.openConfig).toBe('function');
     expect(typeof trayFake.actions?.reload).toBe('function');
+    expect(typeof trayFake.actions?.clearCacheReload).toBe('function');
     expect(typeof trayFake.actions?.quit).toBe('function');
+  });
+
+  it('托盘「清除缓存并重载」先清除远程会话缓存，再重载目标页', async () => {
+    const trayFake = createTrayFake();
+    const { deps, fakeWindow } = createDeps({ tray: trayFake.tray });
+    const controller = new AppController(deps);
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+    fakeWindow.calls.length = 0;
+    await trayFake.actions?.clearCacheReload();
+
+    expect(fakeWindow.calls).toEqual(['clearRemoteCache', 'reloadMain']);
+  });
+
+  it('托盘「清除缓存并重载」清除失败时仍继续重载（降级为普通重载）', async () => {
+    const trayFake = createTrayFake();
+    const { deps, fakeWindow } = createDeps({ tray: trayFake.tray });
+    fakeWindow.setClearCacheResult(false);
+    const controller = new AppController(deps);
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+    fakeWindow.calls.length = 0;
+    await trayFake.actions?.clearCacheReload();
+
+    expect(fakeWindow.calls).toEqual(['clearRemoteCache', 'reloadMain']);
+  });
+
+  it('托盘「清除缓存并重载」在重试排队中先清除，再由重试立即执行', async () => {
+    const trayFake = createTrayFake();
+    const { deps, fakeWindow } = createDeps({ tray: trayFake.tray });
+    // 探测不可达时重试尝试提前返回：用「走了重试链路」区分「直接 reloadMain」。
+    fakeWindow.window.probeTarget = vi.fn(async () => false);
+    const controller = new AppController(deps);
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+    controller.reportLoadFailure({ errorCode: -105, errorDescription: 'ERR_NAME_NOT_RESOLVED', isMainFrame: true });
+    fakeWindow.calls.length = 0;
+    await trayFake.actions?.clearCacheReload();
+
+    // 清除已执行；重载经由重试链路（探测被调用），而非直接 reloadMain。
+    expect(fakeWindow.calls).toEqual(['clearRemoteCache']);
+    expect(fakeWindow.window.probeTarget).toHaveBeenCalledTimes(1);
+    await controller.shutdown();
   });
 
   it('托盘「立即显示窗口」在倒计时中取消倒计时', async () => {

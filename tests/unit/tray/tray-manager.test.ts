@@ -47,6 +47,9 @@ function createActions(): TrayActions & { calls: string[] } {
     reload: () => {
       calls.push('reload');
     },
+    clearCacheReload: () => {
+      calls.push('clearCacheReload');
+    },
     quit: () => {
       calls.push('quit');
     },
@@ -119,7 +122,7 @@ describe('parseKeyBinding', () => {
 });
 
 describe('createTray', () => {
-  it('托盘可用时创建并暴露四个固定动作', () => {
+  it('托盘可用时创建并暴露五个固定动作', () => {
     const fake = createFakeTrayPort();
     const actions = createActions();
 
@@ -130,7 +133,7 @@ describe('createTray', () => {
     expect(fake.created).toHaveLength(1);
   });
 
-  it('四个动作均可被调用且行为正确', () => {
+  it('五个动作均可被调用且行为正确', () => {
     const fake = createFakeTrayPort();
     const actions = createActions();
     createTray(actions, capabilities(), { port: fake.port });
@@ -139,9 +142,10 @@ describe('createTray', () => {
     void trayActions.showWindow();
     void trayActions.openConfig();
     void trayActions.reload();
+    void trayActions.clearCacheReload();
     void trayActions.quit();
 
-    expect(actions.calls).toEqual(['showWindow', 'openConfig', 'reload', 'quit']);
+    expect(actions.calls).toEqual(['showWindow', 'openConfig', 'reload', 'clearCacheReload', 'quit']);
   });
 
   it('macOS 使用菜单栏协议', () => {

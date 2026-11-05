@@ -68,6 +68,10 @@ function createFakeWindow() {
     async reloadMain() {
       calls.push('reloadMain');
     },
+    async clearRemoteCache() {
+      calls.push('clearRemoteCache');
+      return true;
+    },
     isMainWindowVisible: () => mainVisible,
     isConfigWindowOpen: () => configWindowOpen,
     focusConfigWindow() {
@@ -287,17 +291,24 @@ describe('登录自启接入', () => {
 });
 
 describe('托盘接入', () => {
-  it('托盘可用时创建并暴露四个固定动作', async () => {
+  it('托盘可用时创建并暴露五个固定动作', async () => {
     const { deps, fakeTray } = createDeps();
 
     await new AppController(deps).start({ argv: ['app'], workingDirectory: '/work', env: {} });
 
     expect(fakeTray.calls).toContain('create');
     expect(fakeTray.created).toHaveLength(1);
-    expect(Object.keys(fakeTray.created[0]).sort()).toEqual(['configEnabled', 'openConfig', 'quit', 'reload', 'showWindow']);
+    expect(Object.keys(fakeTray.created[0]).sort()).toEqual([
+      'clearCacheReload',
+      'configEnabled',
+      'openConfig',
+      'quit',
+      'reload',
+      'showWindow',
+    ]);
   });
 
-  it('四个动作分别触发对应窗口能力', async () => {
+  it('动作分别触发对应窗口能力', async () => {
     const { deps, fakeTray, fakeWindow } = createDeps();
     await new AppController(deps).start({ argv: ['app'], workingDirectory: '/work', env: {} });
 
@@ -308,6 +319,16 @@ describe('托盘接入', () => {
     await actions.reload();
 
     expect(fakeWindow.calls).toEqual(['showAndFocusMain', 'openConfigWindow:用户从托盘打开配置界面', 'reloadMain']);
+  });
+
+  it('「清除缓存并重载」先清除远程缓存再重载目标页', async () => {
+    const { deps, fakeTray, fakeWindow } = createDeps();
+    await new AppController(deps).start({ argv: ['app'], workingDirectory: '/work', env: {} });
+
+    fakeWindow.calls.length = 0;
+    await fakeTray.created[0].clearCacheReload();
+
+    expect(fakeWindow.calls).toEqual(['clearRemoteCache', 'reloadMain']);
   });
 
   it('托盘「退出程序」触发关闭并释放资源', async () => {

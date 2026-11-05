@@ -88,6 +88,8 @@ export interface WindowPortManager<W = BrowserWindow> {
   updateSecurity(security: AppConfig['security'], targetUrl?: string): void;
   /** 规格 §5.2：热应用 `network.cacheMode` 的请求头策略。 */
   updateCachePolicy(mode: AppConfig['network']['cacheMode']): void;
+  /** 清除远程会话缓存（托盘「清除缓存并重载」，规格 §10）；失败返回 false 由调用方降级。 */
+  clearRemoteCache(): Promise<boolean>;
 }
 
 export interface ElectronSessionNetworkTarget {
@@ -139,6 +141,10 @@ export function createWindowPortAdapter<W extends MinimalMainWindowTarget = Brow
       windowManager.updateSecurity(config.security, config.targetUrl);
       // 规格 §5.2：cacheMode 的请求头策略热应用；clear 的清除动作在下次启动执行。
       windowManager.updateCachePolicy(config.network.cacheMode);
+    },
+
+    async clearRemoteCache() {
+      return windowManager.clearRemoteCache();
     },
 
     async showAndFocusMain() {
