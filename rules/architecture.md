@@ -7,7 +7,7 @@
 - `src/main/platform/`：操作系统、桌面环境和能力探测；禁止承载业务页面逻辑。
 - `src/main/config/`：配置类型、校验、迁移、路径和持久化。
 - `src/main/window/`：窗口创建、导航守卫和窗口状态策略。
-- `src/main/network/`：代理设置、加载错误分类和重试控制。
+- `src/main/network/`：代理设置、加载错误分类、重试控制和网页缓存策略（`network.cacheMode` 三态；清除范围不含登录态存储）。
 - `src/main/appearance/`：应用图标资源管理（默认图标、用户图标解析、安装与回退）；平台差异（托盘尺寸、Dock）由本模块按能力对象表达。
 - `src/main/startup/`、`src/main/tray/`：登录启动、延迟和托盘适配。
 - `src/preload/`：本地 renderer 所需的最小化 IPC 桥接。
