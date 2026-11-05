@@ -59,6 +59,13 @@ interface FormDraft {
 type Phase = 'loading' | 'ready' | 'saving' | 'failed';
 type TabKey = 'target' | 'window' | 'startup' | 'network' | 'maintenance' | 'logs';
 
+/**
+ * 构建期注入的应用版本（`vite.config.ts` 的 define 读 package.json）。
+ * 版本徽标必须与安装包版本一致；未注入（测试等环境）时回退 `dev`，避免 ReferenceError。
+ */
+declare const __APP_VERSION__: string | undefined;
+const APP_VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -657,7 +664,7 @@ export function ConfigurationApp() {
           </div>
           <span className="brand-title">UniShell</span>
           <span className="brand-subtitle">控制台</span>
-          <span className="version-badge">v0.1.3</span>
+          <span className="version-badge">v{APP_VERSION}</span>
         </div>
 
         <div className="header-status">

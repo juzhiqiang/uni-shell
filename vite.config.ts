@@ -1,8 +1,16 @@
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'electron-vite';
 
 const root = process.cwd();
+
+/**
+ * 构建期读取 package.json 版本并注入 renderer（`__APP_VERSION__`）。
+ * 配置界面顶部的版本徽标必须与安装包版本一致：硬编码会在每次升级后过期
+ * （Task 27 的缺陷根因）。走 define 而非新增 IPC 通道，规格 §11 白名单不变。
+ */
+const appVersion = (JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf-8')) as { version: string }).version;
 
 export default defineConfig({
   main: {
@@ -32,6 +40,9 @@ export default defineConfig({
     root: resolve(root, 'src/renderer/config'),
     publicDir: resolve(root, 'src/renderer/offline'),
     plugins: [react()],
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion),
+    },
     build: {
       outDir: resolve(root, 'dist/renderer/config'),
       emptyOutDir: true,

@@ -1,4 +1,7 @@
 // @vitest-environment happy-dom
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +9,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigurationApp } from '../../../src/renderer/config/App';
 import type { ConfigBridge } from '../../../src/shared/ipc-contract';
 import type { AppConfig } from '../../../src/shared/config-types';
+
+/**
+ * 与 `vite.config.ts` / `vitest.config.ts` 的 define 同源读取：
+ * 徽标必须显示 package.json 的真实版本，硬编码即过期（Task 27 的回归防护）。
+ */
+const APP_VERSION_FOR_TEST = (
+  JSON.parse(readFileSync(resolve(__dirname, '../../../package.json'), 'utf-8')) as { version: string }
+).version;
 
 /**
  * 本地配置界面测试。
@@ -226,6 +237,16 @@ describe('配置界面加载', () => {
     await renderApp();
 
     expect(document.body.textContent).toContain(DEFAULT_CONFIG_PATH);
+  });
+
+  it('版本徽标显示与 package.json 一致的真实版本（构建期注入，防止硬编码过期）', async () => {
+    installBridge();
+
+    await renderApp();
+
+    const badge = document.querySelector('.version-badge');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe(`v${APP_VERSION_FOR_TEST}`);
   });
 
   it('getConfig 失败时展示可操作错误且不渲染表单', async () => {
