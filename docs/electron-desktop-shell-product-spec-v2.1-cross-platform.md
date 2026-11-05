@@ -1,8 +1,8 @@
 # Electron 跨平台通用桌面客户端产品规格说明书
 
-**文档版本：** v2.1.4
+**文档版本：** v2.1.5
 **编制日期：** 2026-10-28  
-**修订日期：** 2026-10-29（v2.1.1：代理语义修正为接口代理，新增自定义应用图标，IPC 白名单增至六个通道）；2026-10-30（v2.1.2：新增渲染进程崩溃与无响应的自动恢复规则与对应诊断必记项；v2.1.3：远程与本地会话分区隔离，断网重试改为指数退避、后台探测与恢复事件立即重试；v2.1.4：启动时代理策略应用失败须询问用户，记录失败和用户决定）
+**修订日期：** 2026-10-29（v2.1.1：代理语义修正为接口代理，新增自定义应用图标，IPC 白名单增至六个通道）；2026-10-30（v2.1.2：新增渲染进程崩溃与无响应的自动恢复规则与对应诊断必记项；v2.1.3：远程与本地会话分区隔离，断网重试改为指数退避、后台探测与恢复事件立即重试；v2.1.4：启动时代理策略应用失败须询问用户，记录失败和用户决定）；2026-11-05（v2.1.5：新增可配置的网页缓存模式 `network.cacheMode`——保留缓存、每次向服务器验证、启动时清除缓存三态，清理范围不含登录态存储）
 **替代版本：** v2.0.0 Windows 单平台规格  
 **产品形态：** Windows / macOS / Linux Electron 桌面客户端  
 **交付形态：** 平台安装包 + 可预配置绿色/便携包
@@ -17,6 +17,7 @@
 - 配置缺失、损坏或目标网址无效时进入本地配置界面；
 - 适配办公 PC、展厅大屏、触控一体机和无人值守场景；
 - 支持接口代理（仅接口域名走代理）、断网重试、托盘驻留、全屏/Kiosk、置顶、开机自启和延迟唤醒；
+- 支持可配置的网页缓存策略（保留缓存、每次向服务器验证、启动时清除缓存），任何缓存清理均不删除登录态存储；
 - 支持自定义应用图标（窗口、任务栏、托盘与 Dock 使用用户提供的图标）；
 - 支持单实例运行和现场运维入口；
 - Windows、Linux、macOS 使用同一配置结构和同一安全边界；
@@ -107,7 +108,7 @@ Linux 额外兼容 Debian 12；其他发行版仅提供“尽力支持”，不�
 
 写入必须采用临时文件加原子替换，并保留最近一次有效配置备份。主路径不可写时不得静默失败。
 
-配置保存成功后按变更字段决定生效方式：`security.*`、`window.*`、`network.*`、`maintenance.*`、`logging.level` 热应用，不刷新页面；`targetUrl` 变更重新加载主窗口页面；`appearance.icon`、`startup.*`（`startup.openAtLogin` 除外）、`logging.retentionDays` 变更后重启客户端。`startup.openAtLogin` 继续通过现有保存副作用同步应用。多类字段同时变更时采用最高影响级别：重启高于页面重载，页面重载高于热应用。保存 IPC 返回 `applied: 'hot' | 'reload' | 'restart'`，配置界面按结果提示“配置已生效”“页面正在重新加载”或“客户端即将重启”。配置首次创建时按完整配置判定所需动作。
+配置保存成功后按变更字段决定生效方式：`security.*`、`window.*`、`network.*`、`maintenance.*`、`logging.level` 热应用，不刷新页面（`network.cacheMode` 的请求头策略同样即时生效；`clear` 模式的缓存清除动作在下次启动、首次加载目标页之前执行）；`targetUrl` 变更重新加载主窗口页面；`appearance.icon`、`startup.*`（`startup.openAtLogin` 除外）、`logging.retentionDays` 变更后重启客户端。`startup.openAtLogin` 继续通过现有保存副作用同步应用。多类字段同时变更时采用最高影响级别：重启高于页面重载，页面重载高于热应用。保存 IPC 返回 `applied: 'hot' | 'reload' | 'restart'`，配置界面按结果提示“配置已生效”“页面正在重新加载”或“客户端即将重启”。配置首次创建时按完整配置判定所需动作。
 
 ### 5.3 读取与校验规则
 
@@ -146,7 +147,8 @@ Linux 额外兼容 Debian 12；其他发行版仅提供“尽力支持”，不�
     "apiProxyHosts": [],
     "retryIntervalSec": 3,
     "requestTimeoutSec": 20,
-    "offlinePageEnabled": true
+    "offlinePageEnabled": true,
+    "cacheMode": "keep"
   },
   "startup": {
     "openAtLogin": false,
@@ -184,6 +186,7 @@ Linux 额外兼容 Debian 12；其他发行版仅提供“尽力支持”，不�
 - `startup.initialState` 可选 `tray`、`minimized`；
 - `startup.delaySec` 为 0～3600 的整数；
 - `network.apiProxyHosts` 为接口域名列表，每项为主机名（如 `api.example.com`）或子域通配（如 `*.example.com`），不带协议、端口和路径；含义见 §7；
+- `network.cacheMode` 可选 `keep`、`revalidate`、`clear`，默认 `keep`；含义见 §7；
 - `appearance.icon` 为配置目录中的图标文件名（如 `app-icon.png`），留空表示使用内置默认图标；
 - 代理账号密码不得明文写入 `config.json`。
 
@@ -199,6 +202,14 @@ Linux 额外兼容 Debian 12；其他发行版仅提供“尽力支持”，不�
 - `apiProxyHosts` 为空时，代理不生效（等同直连），配置界面需明确提示。
 
 代理切换必须对后续请求生效，并关闭或刷新旧连接。跨平台不承诺自动补 CORS 响应头，也不内置业务 API 反向代理。
+
+网页缓存由 `network.cacheMode` 控制，默认 `keep`：
+
+- `keep`：客户端不干预网页缓存，页面与子资源的缓存行为完全由目标网站的响应头决定；
+- `revalidate`：远程业务会话发起的每个 http/https 请求附加 `Cache-Control: no-cache`，每次导航都向服务器验证，服务器返回 304 时仍使用本地副本；该模式不改动任何本地存储；
+- `clear`：在 `revalidate` 行为之上，客户端启动时、首次加载目标页之前，清除远程会话的 HTTP 缓存、CacheStorage 与 Service Worker 注册，避免旧版页面、旧 Service Worker 或缺失的带哈希资源导致白屏。
+
+任何模式下都不得清除远程会话的 Cookie、localStorage、IndexedDB、文件系统等登录态相关存储，保证业务系统登录态在缓存清理后仍然有效。缓存清除失败时记录日志并继续加载页面，不阻断启动。保存配置切换 `cacheMode` 时请求头策略即时生效；`clear` 的清除动作在下次启动、首次加载目标页之前执行。
 
 页面加载失败时：
 
@@ -290,6 +301,8 @@ Linux 桌面未提供托盘协议时，客户端不得崩溃；应记录能力�
 
 启动时代理应用失败必须记录 `proxy-apply-failed`，以及用户决定继续或返回配置界面的诊断事件；事件仅包含代理模式和决定，不包含代理地址、凭据或异常原文。
 
+清除网页缓存时必须记录 `cache-cleared`（含 `network.cacheMode` 与清除范围），清除失败时记录 `cache-clear-failed`；两个事件均不得包含目标网址及其查询参数。
+
 ## 13. 交付与打包
 
 | 平台 | 标准安装包 | 便携/绿色包 |
@@ -315,6 +328,7 @@ Windows 严禁默认安装到 `C:\Program Files`。macOS 包必须通过 Develop
 - 远程页面无法访问 Node、本地文件和任意 IPC；
 - 远程业务窗口（`persist:remote`）与本地配置窗口（`local-config`）会话分区相互独立，配置窗口的打开、关闭与生命周期不影响远程窗口的下载、权限及代理策略；
 - 接口代理只作用于接口域名：接口域名请求经代理、页面与其余流量直连，可用抓包或代理日志验证；
+- `network.cacheMode` 三态行为符合 §7：`keep` 不干预缓存；`revalidate` 时网页每次导航均向服务器验证（可用开发工具网络面板或代理日志确认请求头）；`clear` 时目标网站更新后重启客户端即加载到新版本，且登录态（Cookie、localStorage）保留；
 - 自定义图标保存并重启后，窗口、任务栏/Dock 与托盘均显示用户图标；图标缺失或损坏时回退内置默认图标且不阻断启动。
 
 ### 14.2 平台验收
