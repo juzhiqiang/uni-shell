@@ -39,6 +39,7 @@ interface FormDraft {
   requestTimeoutSec: string;
   offlinePageEnabled: boolean;
   cacheMode: CacheMode;
+  allowUntrustedCertificates: boolean;
   openAtLogin: boolean;
   initialState: InitialState;
   delaySec: string;
@@ -95,6 +96,7 @@ function toDraft(config: AppConfig): FormDraft {
     requestTimeoutSec: String(config.network.requestTimeoutSec),
     offlinePageEnabled: config.network.offlinePageEnabled,
     cacheMode: config.network.cacheMode,
+    allowUntrustedCertificates: config.network.allowUntrustedCertificates ?? false,
     openAtLogin: config.startup.openAtLogin,
     initialState: config.startup.initialState,
     delaySec: String(config.startup.delaySec),
@@ -152,6 +154,7 @@ function buildCandidate(draft: FormDraft): Record<string, unknown> {
       requestTimeoutSec: toInteger(draft.requestTimeoutSec),
       offlinePageEnabled: draft.offlinePageEnabled,
       cacheMode: draft.cacheMode,
+      allowUntrustedCertificates: draft.allowUntrustedCertificates,
     },
     startup: {
       openAtLogin: draft.openAtLogin,
@@ -931,6 +934,21 @@ export function ConfigurationApp() {
                       HTTP 缓存、CacheStorage 与 Service Worker，适用于网页更新后仍显示旧版或白屏的场景。任何模式都不会删除
                       Cookie、localStorage 等登录信息。
                     </p>
+                    <CheckboxField
+                      id="allowUntrustedCertificates"
+                      label="允许不受信任的证书（自签名、证书过期、主机名不匹配等一律放行）"
+                      checked={draft.allowUntrustedCertificates}
+                      onChange={(checked) => update('allowUntrustedCertificates', checked)}
+                    />
+                    <p className="field-hint">
+                      目标网站使用自行生成的 HTTPS 证书（自签名或内网 CA）时开启，页面即可正常打开。开启后会忽略该网站的全部 HTTPS
+                      证书错误，存在中间人攻击风险，仅建议用于可信内网；保存后客户端会重新加载页面使开关生效。
+                    </p>
+                    {draft.allowUntrustedCertificates && (
+                      <p role="status" className="banner banner-dirty">
+                        已开启证书放行：当前会忽略目标网站的全部 HTTPS 证书错误，请确认网络环境可信。
+                      </p>
+                    )}
                   </fieldset>
                 </div>
               </div>

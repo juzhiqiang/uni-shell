@@ -60,6 +60,14 @@ export interface NetworkConfig {
   offlinePageEnabled: boolean;
   /** 网页缓存模式，默认 `keep`；含义见规格 §7。 */
   cacheMode: CacheMode;
+  /**
+   * 是否放行远程业务会话中不受信任的 HTTPS 证书（规格 v2.1.7 §7）。
+   * 默认 `false`：证书校验失败时页面加载失败，与普通浏览器一致。
+   * `true`：远程会话（`persist:remote`）的全部证书错误（自签名、不受信任的
+   * CA、主机名不匹配、过期、弱签名、已吊销等）一律放行，主框架、子资源与
+   * 主进程连通性探测同样生效；仅建议用于内网自建证书的可信场景。
+   */
+  allowUntrustedCertificates: boolean;
 }
 
 export interface StartupConfig {

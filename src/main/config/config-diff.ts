@@ -22,6 +22,9 @@ function levelForPath(path: string): ConfigApplyLevel {
   if (RESTART_PATHS.has(path) || path.startsWith('startup.') && path !== 'startup.openAtLogin' || path === 'schemaVersion') {
     return 'restart';
   }
+  // 证书校验只发生在新发起的 TLS 连接上：已停留在证书错误页或离线页的窗口
+  // 必须重载页面，开关才会生效（规格 §5.2、§7）。
+  if (path === 'network.allowUntrustedCertificates') return 'reload';
   if (path === 'targetUrl') return 'reload';
   return 'hot';
 }

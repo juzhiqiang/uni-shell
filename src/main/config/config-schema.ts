@@ -243,6 +243,7 @@ const networkSchema = z
     requestTimeoutSec: positiveIntSchema.default(20),
     offlinePageEnabled: z.boolean().default(true),
     cacheMode: z.enum(['keep', 'revalidate', 'clear'] satisfies CacheMode[]).default('keep'),
+    allowUntrustedCertificates: z.boolean().default(false),
   })
   .prefault({})
   .superRefine((network, ctx) => {

@@ -118,6 +118,7 @@ describe('config schema', () => {
         'security.allowPopups',
         'security.allowDownloads',
         'network.offlinePageEnabled',
+        'network.allowUntrustedCertificates',
       ]) {
         const result = validateConfig(buildConfigWith(path, 'yes'));
         expect(result.ok, `${path} 应当拒绝字符串 "yes"`).toBe(false);
@@ -220,6 +221,7 @@ describe('config schema', () => {
         requestTimeoutSec: 20,
         offlinePageEnabled: true,
         cacheMode: 'keep',
+        allowUntrustedCertificates: false,
       });
       expect(migrated.startup).toEqual({
         openAtLogin: false,
@@ -519,6 +521,29 @@ describe('config schema', () => {
         network: { proxyMode: 'fixed', proxyServer: 'proxy.example.com:8080', apiProxyHosts: ['api.example.com'] },
       });
       expect(result.network.cacheMode).toBe('keep');
+      expect(result.network.apiProxyHosts).toEqual(['api.example.com']);
+    });
+  });
+
+  describe('network.allowUntrustedCertificates（不受信任证书放行，规格 §7）', () => {
+    it('默认 false（不干预证书校验）', () => {
+      const migrated = migrateConfig({ targetUrl: 'https://example.com' });
+      expect(migrated.network.allowUntrustedCertificates).toBe(false);
+    });
+
+    it('显式取值迁移后保留', () => {
+      for (const allowUntrustedCertificates of [true, false]) {
+        const result = migrateConfig({ targetUrl: 'https://example.com', network: { allowUntrustedCertificates } });
+        expect(result.network.allowUntrustedCertificates).toBe(allowUntrustedCertificates);
+      }
+    });
+
+    it('旧配置缺少该字段时按 false 迁移，不破坏既有配置', () => {
+      const result = migrateConfig({
+        targetUrl: 'https://example.com',
+        network: { proxyMode: 'fixed', proxyServer: 'proxy.example.com:8080', apiProxyHosts: ['api.example.com'] },
+      });
+      expect(result.network.allowUntrustedCertificates).toBe(false);
       expect(result.network.apiProxyHosts).toEqual(['api.example.com']);
     });
   });

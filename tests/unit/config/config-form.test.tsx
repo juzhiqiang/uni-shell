@@ -42,6 +42,7 @@ const DEFAULT_NETWORK: AppConfig['network'] = {
   requestTimeoutSec: 20,
   offlinePageEnabled: true,
   cacheMode: 'keep',
+  allowUntrustedCertificates: false,
 };
 
 function createConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -160,6 +161,15 @@ async function selectField(id: string, value: string): Promise<void> {
     const element = field(id);
     setNativeValue(element, value);
     element.dispatchEvent(new window.Event('change', { bubbles: true }));
+  });
+}
+
+async function setCheckbox(id: string, checked: boolean): Promise<void> {
+  await act(async () => {
+    const element = field(id) as HTMLInputElement;
+    // React 对 checkbox 的 onChange 由 click 事件触发（ChangeEventPlugin 的
+    // shouldUseClick 分支）；happy-dom 的 click() 自带勾选/取消激活行为。
+    if (element.checked !== checked) element.click();
   });
 }
 
@@ -382,6 +392,7 @@ describe('代理条件字段', () => {
             requestTimeoutSec: 20,
             offlinePageEnabled: true,
             cacheMode: 'keep',
+            allowUntrustedCertificates: false,
           },
         }),
       ),
@@ -410,6 +421,28 @@ describe('代理条件字段', () => {
     expect(bridge.saveConfig).toHaveBeenCalledTimes(1);
     const saved = bridge.saveConfig.mock.calls[0][0] as { network: { cacheMode: string } };
     expect(saved.network.cacheMode).toBe('revalidate');
+  });
+
+  it('允许不受信任的证书复选框回填并随配置保存，勾选后给出风险提示', async () => {
+    const bridge = installBridge({
+      getConfig: vi.fn(async () =>
+        createConfig({
+          network: { ...DEFAULT_NETWORK, allowUntrustedCertificates: true },
+        }),
+      ),
+    });
+
+    await renderApp();
+    const checkbox = field('allowUntrustedCertificates') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    expect(document.body.textContent).toContain('忽略目标网站的全部 HTTPS 证书错误');
+
+    await setCheckbox('allowUntrustedCertificates', false);
+    await submitForm();
+
+    expect(bridge.saveConfig).toHaveBeenCalledTimes(1);
+    const saved = bridge.saveConfig.mock.calls[0][0] as { network: { allowUntrustedCertificates: boolean } };
+    expect(saved.network.allowUntrustedCertificates).toBe(false);
   });
 
   it('代理模式非直连但未填接口域名时给出非阻塞提示，且不阻止保存', async () => {
@@ -499,6 +532,7 @@ describe('恢复默认值', () => {
             requestTimeoutSec: 60,
             offlinePageEnabled: false,
             cacheMode: 'keep',
+            allowUntrustedCertificates: false,
           },
           startup: { openAtLogin: true, initialState: 'minimized', delaySec: 120, delayOnlyOnLogin: true, showAfterDelay: false },
           logging: { level: 'debug', retentionDays: 30 },
@@ -521,6 +555,7 @@ describe('恢复默认值', () => {
     expect((field('closeAction') as HTMLSelectElement).value).toBe('hide');
     expect((field('hotkey') as HTMLInputElement).value).toBe('Ctrl+Alt+Shift+F12');
     expect((field('allowedOrigins') as HTMLTextAreaElement).value).toBe('');
+    expect((field('allowUntrustedCertificates') as HTMLInputElement).checked).toBe(false);
   });
 });
 

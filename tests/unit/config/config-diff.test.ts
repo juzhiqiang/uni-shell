@@ -28,6 +28,13 @@ describe('classifyConfigChange', () => {
     const target = { ...base, targetUrl: 'https://new.example.com' };
     expect(classifyConfigChange(base, target).level).toBe('reload');
 
+    // 规格 §5.2、§7：证书校验只发生在新发起的 TLS 连接上，
+    // 已停留在证书错误页/离线页的窗口必须重载页面开关才生效。
+    const certPolicy = structuredClone(base);
+    certPolicy.network.allowUntrustedCertificates = true;
+    expect(classifyConfigChange(base, certPolicy).level).toBe('reload');
+    expect(classifyConfigChange(base, certPolicy).changedPaths).toContain('network.allowUntrustedCertificates');
+
     const restart = structuredClone(base);
     restart.appearance.icon = 'app-icon.png';
     expect(classifyConfigChange(base, restart).level).toBe('restart');

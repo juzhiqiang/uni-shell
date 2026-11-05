@@ -16,7 +16,8 @@
     "retryIntervalSec": 3,
     "requestTimeoutSec": 20,
     "offlinePageEnabled": true,
-    "cacheMode": "keep"
+    "cacheMode": "keep",
+    "allowUntrustedCertificates": false
   },
   "startup": {
     "openAtLogin": false,
