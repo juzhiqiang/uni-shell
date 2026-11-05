@@ -1362,3 +1362,45 @@ describe('网页缓存模式（network.cacheMode，规格 v2.1.5 §7）', () => 
     expect(harness.getSession('persist:remote').webRequest.activeListenerCount()).toBe(0);
   });
 });
+
+describe('运行中清除远程缓存（托盘「清除缓存并重载」，规格 v2.1.6 §10）', () => {
+  it('主窗口存在时清除缓存并发出 remote-cache-cleared，返回 true', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(appConfig());
+    const remote = harness.getSession('persist:remote');
+
+    await expect(harness.manager.clearRemoteCache()).resolves.toBe(true);
+
+    expect(remote.clearCalls).toEqual(['clearStorageData:cachestorage,serviceworkers', 'clearCache']);
+    expect(harness.events).toContainEqual({ type: 'remote-cache-cleared', mode: 'keep' });
+  });
+
+  it('清除失败返回 false 并发出 remote-cache-clear-failed，由调用方降级为重载', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(appConfig());
+    const remote = harness.getSession('persist:remote');
+    remote.failClearCache = true;
+
+    await expect(harness.manager.clearRemoteCache()).resolves.toBe(false);
+    const failed = harness.events.find((event) => event.type === 'remote-cache-clear-failed');
+    expect(failed).toMatchObject({ mode: 'keep', message: '磁盘占用' });
+  });
+
+  it('无主窗口时返回 true 且不清除（重建窗口即全新会话内加载）', async () => {
+    const harness = createManager();
+    await expect(harness.manager.clearRemoteCache()).resolves.toBe(true);
+    expect(harness.getSession('persist:remote').clearCalls).toEqual([]);
+  });
+
+  it('事件中的 mode 跟随当前缓存模式', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(
+      appConfig({ network: { ...createDefaultConfig('https://app.example.com').network, cacheMode: 'clear' } }),
+    );
+    harness.events.length = 0;
+
+    await harness.manager.clearRemoteCache();
+
+    expect(harness.events).toContainEqual({ type: 'remote-cache-cleared', mode: 'clear' });
+  });
+});

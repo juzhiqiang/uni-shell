@@ -24,7 +24,7 @@ import type { AppConfig, CacheMode, InitialState, SecurityConfig, WindowConfig, 
 import { mapAlwaysOnTopLevel } from '../platform/capability-detector';
 import type { MappedWindowLevel, PlatformCapabilities } from '../platform/platform-adapter';
 import {
-  clearRemoteCache,
+  clearRemoteCache as clearSessionCache,
   installCachePolicy,
   resolveCacheBehavior,
   type CachePolicyHandle,
@@ -362,6 +362,8 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
   private remoteSessionPolicy: SessionPolicyHandle | null = null;
   /** 远程会话缓存策略句柄（规格 v2.1.5 §7 `network.cacheMode`）；按会话幂等持有。 */
   private remoteCachePolicy: CachePolicyHandle | undefined;
+  /** 当前生效的缓存模式，供清除事件与诊断使用。 */
+  private lastCacheMode: CacheMode = 'keep';
   private configSessionPolicy: SessionPolicyHandle | null = null;
   private security: SecurityConfig = createLocalConfigSecurityPolicy();
   private windowPolicy: { window: WindowConfig; capabilities: PlatformCapabilities } | null = null;
@@ -433,7 +435,7 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     this.attachCachePolicy(cacheSession, config.network.cacheMode);
     if (cacheSession !== undefined && resolveCacheBehavior(config.network.cacheMode).clearOnStart) {
       try {
-        await clearRemoteCache(cacheSession);
+        await clearSessionCache(cacheSession);
         this.emit({ type: 'remote-cache-cleared', mode: config.network.cacheMode });
       } catch (error) {
         // 清除失败只记录并继续加载：缓存问题不应阻断启动（规格 §7）。
@@ -575,12 +577,34 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
 
   /** 按会话幂等安装/切换缓存策略；句柄跨窗口创建周期持有（分区持久，策略随会话存活）。 */
   private attachCachePolicy(session: CachePolicySession | undefined, mode: CacheMode): void {
+    this.lastCacheMode = mode;
     if (!session) return;
     if (this.remoteCachePolicy) {
       this.remoteCachePolicy.update(mode);
       return;
     }
     this.remoteCachePolicy = installCachePolicy(session, mode);
+  }
+
+  /**
+   * 清除远程会话缓存（托盘「清除缓存并重载」，规格 v2.1.6 §10）。
+   *
+   * 与 `cacheMode` 无关：任何模式下用户都可主动恢复。无主窗口时无需清除
+   * （窗口已销毁，会话内缓存不再被使用；重建后重新加载）。失败返回 false，
+   * 由调用方降级为「只重载」并记录日志，不阻断恢复动作。
+   */
+  async clearRemoteCache(): Promise<boolean> {
+    const main = this.getMainWindow();
+    const session = main === null ? undefined : this.cacheSessionOf(main);
+    if (session === undefined) return true;
+    try {
+      await clearSessionCache(session);
+      this.emit({ type: 'remote-cache-cleared', mode: this.lastCacheMode });
+      return true;
+    } catch (error) {
+      this.emit({ type: 'remote-cache-clear-failed', mode: this.lastCacheMode, message: describeError(error) });
+      return false;
+    }
   }
 
   /** 规格 §5.2：保存配置切换 `network.cacheMode` 时请求头策略即时生效；clear 的清除在下次启动执行。 */
