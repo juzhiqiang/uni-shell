@@ -436,6 +436,7 @@ describe('代理条件字段', () => {
     const checkbox = field('allowUntrustedCertificates') as HTMLInputElement;
     expect(checkbox.checked).toBe(true);
     expect(document.body.textContent).toContain('忽略目标网站的全部 HTTPS 证书错误');
+    expect(document.body.textContent).toContain('自动重启');
 
     await setCheckbox('allowUntrustedCertificates', false);
     await submitForm();

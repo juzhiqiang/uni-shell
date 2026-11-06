@@ -300,6 +300,19 @@ describe('saveConfig 通道受控保存', () => {
     expect(harness.logger.info).toHaveBeenCalledWith('config-saved', expect.objectContaining({ path: PATHS.writePath }));
   });
 
+  it('仅切换 allowUntrustedCertificates 也走重启分级（证书校验结果按主机缓存，运行中切换不生效）', async () => {
+    const harness = createHarness({ initial: { [PATHS.writePath]: storedConfig() } });
+    registerConfigIpc(harness.deps);
+
+    const result = await call(harness, CONFIG_IPC_CHANNELS.saveConfig, {
+      ...JSON.parse(storedConfig()),
+      network: { proxyMode: 'direct', proxyServer: '', proxyBypass: '', retryIntervalSec: 3, requestTimeoutSec: 20, offlinePageEnabled: true, cacheMode: 'keep', allowUntrustedCertificates: true },
+    });
+
+    expect(result).toMatchObject({ ok: true, applied: 'restart', requiresRestart: true });
+    expect(harness.calls).toEqual(['onSaved', 'closeStaleWindows', 'restart']);
+  });
+
   it('校验失败时不写盘、不重启', async () => {
     const harness = createHarness({ initial: { [PATHS.writePath]: storedConfig() } });
     registerConfigIpc(harness.deps);

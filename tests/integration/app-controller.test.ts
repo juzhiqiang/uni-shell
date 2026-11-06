@@ -385,7 +385,7 @@ describe('AppController 启动', () => {
       ).toBe(true);
     });
 
-    it('保存切换 allowUntrustedCertificates 时热切换策略，其他字段变更不重复应用', async () => {
+    it('保存切换 allowUntrustedCertificates 不在运行中热切换（重启级字段）', async () => {
       const certificatePolicy = { apply: vi.fn(() => ({ installed: false })) };
       const { deps } = createDeps({ certificatePolicy });
       const controller = new AppController(deps);
@@ -393,14 +393,12 @@ describe('AppController 启动', () => {
       await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
       certificatePolicy.apply.mockClear();
 
-      const hot = structuredClone(configWithCertPolicy(false));
-      hot.network.retryIntervalSec = 9;
-      await controller.applySavedConfig(hot, false);
-      expect(certificatePolicy.apply).not.toHaveBeenCalled();
+      // 证书校验结果由网络服务按主机缓存，运行中切换对已发起过校验的主机不
+      // 生效（规格 §5.2、§7）：该字段是重启级，保存后由保存流程自动重启，
+      // 下次启动时才安装策略，因此这里不得在运行中热切换。
+      await controller.applySavedConfig(configWithCertPolicy(true), true);
 
-      await controller.applySavedConfig(configWithCertPolicy(true), false);
-      expect(certificatePolicy.apply).toHaveBeenCalledTimes(1);
-      expect(certificatePolicy.apply.mock.calls[0][0].allowUntrustedCertificates).toBe(true);
+      expect(certificatePolicy.apply).not.toHaveBeenCalled();
     });
 
     it('未注入证书策略端口时不阻断启动', async () => {
