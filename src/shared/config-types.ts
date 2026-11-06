@@ -66,6 +66,9 @@ export interface NetworkConfig {
    * `true`：远程会话（`persist:remote`）的全部证书错误（自签名、不受信任的
    * CA、主机名不匹配、过期、弱签名、已吊销等）一律放行，主框架、子资源与
    * 主进程连通性探测同样生效；仅建议用于内网自建证书的可信场景。
+   *
+   * 重启级字段：证书校验结果由网络服务按主机缓存，运行中切换对已发起过
+   * 校验的主机不生效，保存后由客户端自动重启生效（规格 §5.2）。
    */
   allowUntrustedCertificates: boolean;
 }

@@ -114,7 +114,7 @@ export interface AppControllerDeps {
   shortcutTarget?: ShortcutTarget;
   /** 代理应用端口；提供时启动流程在创建主窗口前应用代理（规格 §7）。 */
   proxy?: ProxyPort;
-  /** 证书校验策略端口；提供时启动与配置保存后应用（规格 v2.1.7 §7）。 */
+  /** 证书校验策略端口；提供时在启动、创建主窗口前应用（规格 v2.1.7 §7；该字段为重启级，不在保存流程热切换）。 */
   certificatePolicy?: CertificatePolicyPort;
   /** 启动代理失败确认端口；缺少确认端口时按拒绝处理。 */
   confirmProxyFailure?: ConfirmProxyFailure;
@@ -209,11 +209,10 @@ export class AppController {
       const applied = await this.applyProxyConfig(config.network);
       if (!applied) warning = '网络代理配置未能应用，请查看日志。';
     }
-    // 规格 v2.1.7 §7：证书放行开关切换时热切换校验策略（页面重载由
-    // config-diff 的 reload 分级负责，使开关对已失败的页面立即生效）。
-    if (previous === undefined || previous.network.allowUntrustedCertificates !== config.network.allowUntrustedCertificates) {
-      this.applyCertificatePolicy(config.network);
-    }
+    // `network.allowUntrustedCertificates` 是重启级字段（config-diff）：
+    // 证书校验结果由网络服务按主机缓存，运行中热切换对已发起过校验的主机不
+    // 生效，因此不在保存流程里切换，由保存后的自动重启在启动时统一应用
+    // （规格 v2.1.7 §7）。
     if (previous === undefined || previous.network.retryIntervalSec !== config.network.retryIntervalSec ||
         previous.network.offlinePageEnabled !== config.network.offlinePageEnabled) {
       this.startRetryController();
@@ -553,12 +552,16 @@ export class AppController {
   }
 
   /**
-   * 规格 v2.1.7 §7：应用不受信任证书放行策略。
+   * 规格 v2.1.7 §7：安装不受信任证书放行策略。
    *
-   * 启动流程在创建主窗口前调用（与代理同级）；保存配置切换
-   * `network.allowUntrustedCertificates` 时热切换。与代理不同，应用失败
-   * 不阻断启动：校验策略装不上时按 Chromium 默认校验继续，页面行为与
-   * 升级前一致（证书有问题的站点打不开），仅记录诊断。
+   * 只在启动流程、创建主窗口之前调用。证书校验结果由网络服务按主机缓存
+   * （Electron `setCertificateVerifyProc` 的既定行为），运行中切换对已经
+   * 发起过校验的主机不生效——已因证书错误停留错误页或离线页的窗口即使
+   * 重新加载也仍会失败，必须重启进程。因此该字段是重启级：保存后由保存
+   * 流程自动重启，重启后在启动时统一安装（规格 §5.2）。
+   *
+   * 与代理不同，安装失败不阻断启动：策略装不上时按 Chromium 默认校验继续，
+   * 页面行为与未开启时一致（证书有问题的站点打不开），仅记录诊断。
    */
   applyCertificatePolicy(network: NetworkConfig): void {
     const port = this.deps.certificatePolicy;

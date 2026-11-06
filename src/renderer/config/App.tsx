@@ -942,7 +942,7 @@ export function ConfigurationApp() {
                     />
                     <p className="field-hint">
                       目标网站使用自行生成的 HTTPS 证书（自签名或内网 CA）时开启，页面即可正常打开。开启后会忽略该网站的全部 HTTPS
-                      证书错误，存在中间人攻击风险，仅建议用于可信内网；保存后客户端会重新加载页面使开关生效。配置界面的「测试连接」按系统校验执行，不受本开关影响。
+                      证书错误，存在中间人攻击风险，仅建议用于可信内网。证书校验结果会被系统按主机缓存，运行中切换不生效，保存后客户端将自动重启使开关生效。配置界面的「测试连接」按系统校验执行，不受本开关影响。
                     </p>
                     {draft.allowUntrustedCertificates && (
                       <p role="status" className="banner banner-dirty">

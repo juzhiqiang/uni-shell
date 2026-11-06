@@ -7,7 +7,14 @@ export interface ConfigChangeClassification {
   changedPaths: string[];
 }
 
-const RESTART_PATHS = new Set(['appearance.icon', 'logging.retentionDays']);
+/**
+ * 重启级字段。
+ *
+ * `network.allowUntrustedCertificates` 属重启级：证书校验结果由网络服务按主机
+ * 缓存（Electron `setCertificateVerifyProc` 的既定行为），运行中切换对已发起过
+ * 校验的主机不生效，必须重启进程清空缓存（规格 §5.2、§7）。
+ */
+const RESTART_PATHS = new Set(['appearance.icon', 'logging.retentionDays', 'network.allowUntrustedCertificates']);
 
 function flatten(value: unknown, prefix = '', result: Map<string, unknown> = new Map()): Map<string, unknown> {
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
@@ -22,9 +29,6 @@ function levelForPath(path: string): ConfigApplyLevel {
   if (RESTART_PATHS.has(path) || path.startsWith('startup.') && path !== 'startup.openAtLogin' || path === 'schemaVersion') {
     return 'restart';
   }
-  // 证书校验只发生在新发起的 TLS 连接上：已停留在证书错误页或离线页的窗口
-  // 必须重载页面，开关才会生效（规格 §5.2、§7）。
-  if (path === 'network.allowUntrustedCertificates') return 'reload';
   if (path === 'targetUrl') return 'reload';
   return 'hot';
 }
