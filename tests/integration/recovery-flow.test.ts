@@ -730,6 +730,29 @@ describe('休眠唤醒诊断（规格 §12、§14.1）', () => {
     expect(fakeWindow.calls).toContain('createMainWindow');
   });
 
+  it('驻留托盘未建窗时唤醒不重载也不重建窗口（R15）', async () => {
+    const { deps, memory, fakeWindow, paths } = createDeps();
+    const power = createFakePowerMonitor();
+    const fakeDelay = createFakeDelay();
+    writeConfig(memory, paths, {
+      ...baseConfig(),
+      // 驻留托盘 + 延迟到期仍不显示：running 但主窗口从未创建。
+      startup: { ...baseConfig().startup, initialState: 'tray', delaySec: 30, showAfterDelay: false },
+    });
+
+    const controller = new AppController({ ...deps, powerMonitor: power.port, delay: fakeDelay.delay });
+    await controller.start({ ...START_OPTIONS, argv: ['app', '--launched-at-login'] });
+    await fakeDelay.fire();
+    expect(controller.currentState).toBe('running');
+    expect(fakeWindow.calls).not.toContain('createMainWindow');
+
+    power.emitResume();
+
+    // 没有窗口就没有页面可重载；更不得按最近配置把窗口重建出来。
+    expect(fakeWindow.calls).not.toContain('reloadMain');
+    expect(fakeWindow.calls).not.toContain('createMainWindow');
+  });
+
   it('关闭后移除电源监听并不再响应唤醒', async () => {
     const { deps, memory, fakeWindow, paths } = createDeps();
     const power = createFakePowerMonitor();

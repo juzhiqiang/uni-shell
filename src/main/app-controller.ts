@@ -200,11 +200,19 @@ export class AppController {
 
   /** 保存后在当前进程应用无需重启的配置。 */
   async applySavedConfig(config: AppConfig, reloadPage: boolean): Promise<string | undefined> {
+    // R5：关闭流程已开始时不再应用任何配置（IPC 保存与退出竞态）——避免
+    // shutdown 之后再新建重试控制器与定时器、或触发正在退出的窗口加载页面。
+    if (this.state === 'shutting-down' || this.state === 'stopped') return undefined;
+
     const previous = this.config;
     let warning: string | undefined;
     this.config = config;
     this.deps.window.applyConfig?.(config);
-    if (previous === undefined || previous.network.proxyMode !== config.network.proxyMode ||
+    // R4：`reloadPage` 为真说明即将（重）加载远程页面。启动时代理应用失败
+    // 已回落直连，仅改 targetUrl 不会改变 network 段——不重新应用就会带着
+    // 直连状态加载页面，用户以为保存生效了实际代理没生效。
+    if (previous === undefined || reloadPage ||
+        previous.network.proxyMode !== config.network.proxyMode ||
         JSON.stringify(previous.network) !== JSON.stringify(config.network)) {
       const applied = await this.applyProxyConfig(config.network);
       if (!applied) warning = '网络代理配置未能应用，请查看日志。';
@@ -236,6 +244,7 @@ export class AppController {
   }
 
   async reloadConfiguredPage(): Promise<void> {
+    if (this.state === 'shutting-down' || this.state === 'stopped') return;
     await this.reloadMain();
   }
 
@@ -472,6 +481,10 @@ export class AppController {
    *
    * 只为 `true` 主动写入：配置为 `false` 时不动手，避免覆盖用户在操作系统侧
    * 自行设置的登录项。需要关闭时由配置界面显式调用 `applyOpenAtLogin(false)`。
+   *
+   * R10（双源状态）：配置的 `openAtLogin` 与 OS 侧登录项实际状态是两个来源——
+   * 用户在系统设置里手动增删登录项不会同步回配置，反之亦然。这是有意的设计
+   * （见上），现场若需要核对实际状态可经 `LoginItemPort.query()` 查询。
    */
   private async ensureOpenAtLogin(): Promise<void> {
     const config = this.config;
@@ -798,8 +811,9 @@ export class AppController {
       if (this.state === 'shutting-down' || this.state === 'stopped') return;
 
       const log = this.deps.log ?? noopLogger;
-      // 崩溃重载不重置崩溃窗口：连续崩溃仍应累计到阈值。窗口已销毁时
-      // loadURL 会 reject，这里只留痕，不影响后续崩溃计数。
+      // 崩溃重载不重置崩溃窗口：连续崩溃仍应累计到阈值。
+      // 窗口已被销毁时窗口端口会按最近配置重建并加载（自愈），控制器经
+      // main-window-created 事件同步；重建本身失败只留痕，不影响后续崩溃计数。
       this.deps.window.reloadMain().catch((error) => {
         log.error('crash-reload-failed', { message: describeError(error) });
       });
@@ -828,10 +842,38 @@ export class AppController {
     port.onResume(() => {
       log.info('power-resume');
       // 倒计时中不抢建窗口：等延迟到期或用户从托盘触发。
-      if (this.state === 'running') {
+      // R15：主窗口不存在时同样不重载——驻留托盘（showAfterDelay=false）
+      // 下 running 但窗口从未创建，reloadMain 会按最近配置把窗口重建并显示
+      // 出来，那不是唤醒应有的行为。没有窗口就没有页面可重载。
+      if (this.state === 'running' && this.mainWindowCreated) {
         void this.reloadMain();
       }
     });
+  }
+
+  /**
+   * R2：以窗口层事件为准同步窗口生命周期状态。
+   *
+   * 窗口端口会在窗口不存在时按最近配置重建窗口（托盘重载、崩溃重载、保存
+   * 重载），控制器只有跟随 `main-window-created` / `main-window-destroyed`
+   * 事件，才能让 `mainWindowCreated` 与 AppState 跟真实窗口保持一致——
+   * 否则后续的显示分流、网络恢复重试与唤醒重载门控全部对不上。
+   */
+  private syncWindowLifecycle(event: WindowManagerEvent): void {
+    if (event.type === 'main-window-created') {
+      this.mainWindowCreated = true;
+      // R4：窗口在 configuring 状态被重建（如保存 targetUrl 触发的重载）时，
+      // 以窗口事实为准转入 running，并补齐启动时未创建的重试控制器——
+      // 否则该窗口的加载失败没有任何重试与离线页接管。
+      if (this.state === 'configuring' && this.config !== undefined) {
+        this.state = 'running';
+        this.startRetryController();
+      }
+      return;
+    }
+    if (event.type === 'main-window-destroyed') {
+      this.mainWindowCreated = false;
+    }
   }
 
   /**
@@ -839,6 +881,8 @@ export class AppController {
    * URL 可能带有查询参数，脱敏由 logger 统一处理（规格 §11）。
    */
   reportWindowEvent(event: WindowManagerEvent): void {
+    this.syncWindowLifecycle(event);
+
     const log = this.deps.log ?? noopLogger;
 
     switch (event.type) {
@@ -884,6 +928,9 @@ export class AppController {
         break;
       case 'close-action':
         log.info('window-close-action', { window: event.window, action: event.action });
+        break;
+      case 'main-window-destroyed':
+        log.info('window-destroyed', { window: 'main' });
         break;
     }
   }

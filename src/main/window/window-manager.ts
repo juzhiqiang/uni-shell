@@ -192,6 +192,7 @@ export type WindowManagerEvent =
       reason: string;
     }
   | { type: 'close-action'; window: 'main'; action: 'hide' | 'quit' }
+  | { type: 'main-window-destroyed' }
   | { type: 'remote-cache-cleared'; mode: CacheMode }
   | { type: 'remote-cache-clear-failed'; mode: CacheMode; message: string };
 
@@ -309,7 +310,13 @@ class InitialReveal<T extends BrowserWindowLike> {
     this.timer = setTimeout(() => this.markReady(), timeoutMs);
   }
 
-  /** 主动显示；首帧未就绪时挂起，就绪后与初始显示一并执行。 */
+  /**
+   * 主动显示；首帧未就绪时挂起，就绪后与初始显示一并执行。
+   *
+   * 挂起动作是**单槽**：就绪前多次 request 只保留最后一个（各调用方都是
+   * show/focus 组合，语义上等价）。close-to-hide 后 dropPending 会清空槽位，
+   * 已放弃的显示不会在就绪时补弹。
+   */
   request(action: () => void): void {
     if (this.disposed) return;
     if (this.ready) {
@@ -849,7 +856,13 @@ export class WindowManager<T extends BrowserWindowLike = BrowserWindowLike> {
     }
     this.guards.delete(window);
     this.reveals.delete(window);
-    if (this.mainWindow === window) this.mainWindow = null;
+    if (this.mainWindow === window) {
+      this.mainWindow = null;
+      // R2：窗口销毁必须让控制器知道——端口会在窗口不存在时按最近配置重建
+      // 窗口（托盘重载、崩溃重载、保存重载），控制器只有跟随本事件才能保持
+      // `mainWindowCreated` 与 AppState 和真实窗口一致。
+      this.emit({ type: 'main-window-destroyed' });
+    }
     if (this.configWindow === window) {
       this.configWindow = null;
       this.configSessionPolicy?.dispose();

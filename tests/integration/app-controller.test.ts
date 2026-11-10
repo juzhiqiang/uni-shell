@@ -764,6 +764,80 @@ describe('启动来源与延迟', () => {
   });
 });
 
+describe('窗口生命周期事件同步（R2：控制器以窗口层事件为准）', () => {
+  it('main-window-destroyed 事件清除已建窗状态，后续显示重新创建窗口', async () => {
+    const { deps, fakeWindow } = createDeps();
+    const controller = new AppController(deps);
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+    expect(fakeWindow.calls).toContain('createMainWindow');
+    fakeWindow.calls.length = 0;
+
+    // 窗口层销毁了主窗口（端口重建路径之外的真实销毁）。
+    controller.reportWindowEvent({ type: 'main-window-destroyed' });
+    await controller.showAndFocusMain();
+
+    expect(fakeWindow.calls).toContain('createMainWindow');
+  });
+
+  it('configuring 状态收到 main-window-created 后转入 running 并补齐重试控制器（R2/R4）', async () => {
+    const proxy = { apply: vi.fn(async () => { throw new Error('failure'); }) };
+    const { deps, fakeWindow } = createDeps({ proxy, confirmProxyFailure: async () => false });
+    const controller = new AppController(deps);
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+    expect(controller.currentState).toBe('configuring');
+    fakeWindow.calls.length = 0;
+
+    // 配置界面保存 targetUrl（reload 级）后由窗口端口重建主窗口。
+    controller.reportWindowEvent({ type: 'main-window-created' });
+
+    expect(controller.currentState).toBe('running');
+    // 已同步为「已建窗」：再次显示直接聚焦，不再走创建路径。
+    await controller.showAndFocusMain();
+    expect(fakeWindow.calls).toContain('showAndFocusMain');
+    expect(fakeWindow.calls).not.toContain('createMainWindow');
+    // 启动时未创建的重试控制器已补齐：加载失败立即走离线页与重试。
+    controller.reportLoadFailure({ errorCode: -105, errorDescription: 'NAME_NOT_RESOLVED', isMainFrame: true });
+    expect(fakeWindow.calls).toContain('showOfflinePage');
+  });
+});
+
+describe('保存时代理重应用与终态守卫（R4/R5）', () => {
+  it('保存 reload 级配置时即使 network 未变也重新应用代理（启动降级后恢复，R4）', async () => {
+    const proxy = {
+      apply: vi.fn(async () => ({ mode: 'direct' as const, effective: 'direct' as const, hostCount: 0, proxiedHostCount: 0, notes: [] })),
+    };
+    const { deps, fakeWindow } = createDeps({ proxy });
+    const controller = new AppController(deps);
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+    expect(proxy.apply).toHaveBeenCalledTimes(1);
+    fakeWindow.calls.length = 0;
+
+    const base = createDefaultConfig('https://example.com');
+    await controller.applySavedConfig({ ...base, targetUrl: 'https://other.example.com' }, true);
+
+    expect(proxy.apply).toHaveBeenCalledTimes(2);
+    expect(fakeWindow.calls).toContain('reloadMain');
+  });
+
+  it('关闭后保存配置不再应用任何副作用（R5）', async () => {
+    const proxy = {
+      apply: vi.fn(async () => ({ mode: 'direct' as const, effective: 'direct' as const, hostCount: 0, proxiedHostCount: 0, notes: [] })),
+    };
+    const { deps, fakeWindow } = createDeps({ proxy });
+    const controller = new AppController(deps);
+    await controller.start({ argv: ['app'], workingDirectory: '/work', env: {} });
+    await controller.shutdown();
+    proxy.apply.mockClear();
+    fakeWindow.calls.length = 0;
+
+    const warning = await controller.applySavedConfig(createDefaultConfig('https://example.com'), true);
+
+    expect(warning).toBeUndefined();
+    expect(proxy.apply).not.toHaveBeenCalled();
+    expect(fakeWindow.calls).not.toContain('reloadMain');
+  });
+});
+
 describe('AppController 二次启动唤醒', () => {
   it('主窗口隐藏时显示并聚焦', async () => {
     const { deps, fakeWindow } = createDeps();

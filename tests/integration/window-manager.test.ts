@@ -714,6 +714,24 @@ describe('关闭行为', () => {
     expect(harness.manager.getConfigWindow()).toBeNull();
     expect(harness.manager.getMainWindow()).toBeNull();
   });
+
+  it('主窗口销毁时发出 main-window-destroyed 事件（R2：供控制器同步窗口状态）', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(appConfig({ window: windowConfig({ closeAction: 'quit' }) }));
+
+    harness.mainWindow().close();
+
+    expect(harness.events.map((event) => event.type)).toContain('main-window-destroyed');
+  });
+
+  it('close-to-hide 不发出销毁事件（窗口仍存活）', async () => {
+    const harness = createManager();
+    await harness.manager.createMainWindow(appConfig());
+
+    harness.mainWindow().close();
+
+    expect(harness.events.map((event) => event.type)).not.toContain('main-window-destroyed');
+  });
 });
 
 describe('显示器选择', () => {
