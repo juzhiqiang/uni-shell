@@ -323,3 +323,24 @@
 ---
 
 *报告完。所有 file:line 对 2026-11-10 的代码核实；后续代码变迁后引用可能漂移，以代码为准。*
+
+---
+
+## 9. 修复记录（2026-11-10，v0.1.10 / 规格 v2.1.9）
+
+第 6 章风险清单已全部处置：高风险与中风险项完成了代码修复并补充回归测试，低风险项按既定策略以注释固化设计约定。
+
+| 风险 | 处置 | 落点 |
+|---|---|---|
+| R1 二次启动唤醒竞态 | **已修复**：新增 `src/main/instance/second-launch-inbox.ts` 纯模块（deliver/setHandler/drain），handler 就绪前缓存载荷（仅保留最早一条），bootstrap 尾部补投递 | `second-launch-inbox.ts` + `main.ts` 接线 + 5 项单测 |
+| R15 唤醒弹出驻留窗口 | **已修复**：resume 重载增加 `mainWindowCreated` 门控——没有窗口就没有页面可重载，不再按最近配置重建并显示 | `app-controller.ts` subscribePowerMonitor + recovery-flow 回归测试 |
+| R2 控制器与窗口脱同步 | **已修复**：window-manager 新增 `main-window-destroyed` 事件；控制器 `syncWindowLifecycle` 以窗口层事件为准同步 `mainWindowCreated` 与 AppState | `window-manager.ts` releaseWindow + `app-controller.ts` + 4 项测试 |
+| R4 configuring 二分子态 | **已修复**：窗口在 configuring 状态被重建时经事件转入 running 并补齐重试控制器；保存 reload 级配置时即使 network 未变也重新应用代理（覆盖启动降级直连） | `app-controller.ts` applySavedConfig/syncWindowLifecycle + 测试 |
+| R5 shutdown 后保存 | **已修复**：`applySavedConfig` / `reloadConfiguredPage` 入口加终态守卫，关闭后不再新建重试控制器或触发加载 | `app-controller.ts` + 测试 |
+| R3 注释漂移 | **已修复**：`scheduleCrashReload` 注释改为描述实际行为（端口自愈重建 + 事件同步） | `app-controller.ts` |
+| R7 日志真空 | **已修复**： degrade 分流——init 失败仍硬降级；流/写入失败降级为按批 `appendFile` 直写；appendFile 也失败才真正停止。旧的「降级即全丢」测试按新语义更新 | `logger.ts` + 3 项测试（含回写再失败） |
+| R8 死分支/双绑定 | **已修复**：删死分支，`boundHandlers` 按 handler 维度去重（onReady 与 emitReady 两条路径都覆盖） | `shortcut-host.ts` + 2 项测试 |
+| R13 failed 终态 | **已修复**：失败页新增「重新加载」按钮，runLoad 抽出支持重试 | `App.tsx` + config-form 测试 |
+| R6/R9/R10/R11/R14 | **已注释固化**：InitialReveal 单槽语义、uiDraft 双源生命周期、登录项双源、在线边沿门控、脏检查键序稳定性，均以代码注释明示 | 对应模块 |
+
+**验证**：`npm run typecheck` / `lint` 通过；`npx vitest run` 39 文件 781 项全过（修复前 765 项，净增 16 项回归）；`npm run build` 通过（产物核实版本徽标 0.1.10、inbox 与销毁事件入 main 包）。提交（main，均未 push）：规格 v2.1.9 → 唤醒收件箱 → 窗口同步与门控 → 日志降级 → 快捷键去重 → 界面重试 → chore 0.1.10 → 本记录。
