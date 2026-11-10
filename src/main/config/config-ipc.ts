@@ -84,6 +84,13 @@ function blankConfig(): AppConfig {
 
 /** 注册六个白名单通道；返回最近一次有效配置的读取入口。 */
 export function registerConfigIpc(deps: ConfigIpcDeps): ConfigIpcRegistration {
+  /**
+   * 界面草稿（R9 双源状态，生命周期）：
+   * - `undefined`：权威配置可用，界面直接用 `service.reload()` 的结果；
+   * - 空白草稿：`handleGetConfig` 读盘失败时创建，让界面能从默认值开始编辑；
+   * - 清除时机：再次 getConfig 成功、或保存成功落盘。
+   * 双源的代价：配置窗口打开期间文件被外部修复/破坏，界面不感知，需重开窗口。
+   */
   let uiDraft: AppConfig | undefined;
 
   async function handleGetConfig(): Promise<AppConfig> {
