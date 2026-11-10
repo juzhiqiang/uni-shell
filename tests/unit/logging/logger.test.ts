@@ -612,7 +612,7 @@ describe('关闭与刷新', () => {
     expect(lines).toHaveLength(1);
   });
 
-  it('批量写入失败后经 onError 上报并降级为不再写入', async () => {
+  it('流写出错后降级为 appendFile 直写，后续事件仍落盘（R7）', async () => {
     const memory = createMemoryFs();
     memory.failNextWriteFor(DAY_LOG_PATH);
     const errors: Array<{ event: string; code: unknown }> = [];
@@ -625,13 +625,45 @@ describe('关闭与刷新', () => {
       }),
     );
 
-    logger.info('first');
-    logger.info('second');
+    // 凑满一批触发 flush；该批经流写出错（批次本身无法定位续写，丢弃）。
+    for (let index = 0; index < LOG_FLUSH_MAX_LINES; index += 1) logger.info(`batch-${index}`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    logger.info('third');
     await logger.close();
 
-    // 批处理后单条失败无法定位续写：整批丢弃并降级为不可用，不影响主流程。
+    // 降级后的事件经 appendFile 继续落盘，不再出现「日志真空期」。
+    const lines = readLines(memory, DAY_LOG_PATH);
+    expect(lines.map((line) => line.event)).toEqual(['third']);
     expect(errors).toEqual([{ event: 'logger-stream', code: 'ENOSPC' }]);
+  });
+
+  it('appendFile 回写也失败时才真正停止写入', async () => {
+    const memory = createMemoryFs();
+    memory.failNextWriteFor(DAY_LOG_PATH);
+    memory.fs.appendFile = async () => {
+      throw Object.assign(new Error(`ENOSPC: ${DAY_LOG_PATH}`), { code: 'ENOSPC' } as NodeJS.ErrnoException);
+    };
+    const errors: Array<{ event: string; code: unknown }> = [];
+    const logger = createLogger(
+      loggerOptions({
+        fs: memory.fs,
+        onError: (error, event) => {
+          errors.push({ event, code: (error as NodeJS.ErrnoException).code });
+        },
+      }),
+    );
+
+    for (let index = 0; index < LOG_FLUSH_MAX_LINES; index += 1) logger.info(`batch-${index}`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    logger.info('second');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    logger.info('third');
+    await logger.close();
+
     expect(memory.files.get(DAY_LOG_PATH)).toBeUndefined();
+    expect(errors.map((entry) => entry.event)).toEqual(['logger-stream', 'second']);
   });
 
   it('日志目录不可创建时降级为静默丢弃，不影响调用方', async () => {
@@ -739,7 +771,7 @@ describe('批量刷新与写入流（Task 23）', () => {
     expect(readLines(memory, DAY_LOG_PATH)).toHaveLength(1);
   });
 
-  it('降级后不再写入，close 仍正常 resolve', async () => {
+  it('降级为 appendFile 直写后仍能写入，close 仍正常 resolve（R7）', async () => {
     const memory = createMemoryFs();
     const errors: unknown[] = [];
     const logger = createLogger(
@@ -761,8 +793,9 @@ describe('批量刷新与写入流（Task 23）', () => {
     await settle();
 
     await expect(logger.close()).resolves.toBeUndefined();
+    // 出错批次丢失一次；降级后的事件经 appendFile 继续落盘，不再真空。
     expect(errors).toHaveLength(1);
-    expect(memory.files.get(DAY_LOG_PATH)).toBeUndefined();
+    expect(readLines(memory, DAY_LOG_PATH).map((line) => line.event)).toEqual(['after-boom']);
   });
 
   it('跨天与批量阈值混合时顺序不乱、按天拆分', async () => {

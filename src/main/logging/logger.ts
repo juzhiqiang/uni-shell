@@ -407,6 +407,12 @@ export function createLogger(options: LoggerOptions): Logger {
 
   let closed = false;
   let unavailable = false;
+  /**
+   * R7：流式写入出错后的降级标志——改为按批 `appendFile` 直写（即写即走），
+   * 后续事件继续落盘，不再出现「出错后到进程退出前没有任何日志」的真空期。
+   * 初始化失败（目录不可创建）不进此路径：那种情况下 appendFile 同样不可用。
+   */
+  let appendFallback = false;
   let closePromise: Promise<void> | undefined;
   let buffer: LogEntry[] = [];
   let bufferPath: string | undefined;
@@ -433,9 +439,25 @@ export function createLogger(options: LoggerOptions): Logger {
     timer = undefined;
   }
 
-  /** 记录日志失败不能影响主流程：丢弃缓冲与挂起写入，只经 onError 留线索。 */
-  function degrade(error: unknown, event: string): void {
+  /**
+   * 记录日志失败不能影响主流程。
+   *
+   * - `recoverable=false`（初始化失败，如目录不可创建）：硬降级，丢弃缓冲与
+   *   后续事件——appendFile 同样不可用，没有更低成本的出路；
+   * - `recoverable=true`（打开写入口、单批写入或流出错）：降级为按批
+   *   `appendFile` 直写并保留后续日志；appendFile 也失败时才硬降级。
+   */
+  function degrade(error: unknown, event: string, recoverable: boolean): void {
     if (unavailable) return;
+    if (recoverable && openStream !== undefined && !appendFallback) {
+      appendFallback = true;
+      sink = undefined;
+      sinkPath = undefined;
+      options.onError?.(error, event);
+      // 当前缓冲可能还有未写事件：按回写路径立即 flush 出去。
+      void flush();
+      return;
+    }
     unavailable = true;
     buffer = [];
     bufferPath = undefined;
@@ -460,10 +482,10 @@ export function createLogger(options: LoggerOptions): Logger {
     }
     try {
       const stream = openStream(path);
-      stream.onError((error) => degrade(error, 'logger-stream'));
+      stream.onError((error) => degrade(error, 'logger-stream', true));
       return stream;
     } catch (error) {
-      degrade(error, 'logger-stream');
+      degrade(error, 'logger-stream', true);
       return undefined;
     }
   }
@@ -476,13 +498,18 @@ export function createLogger(options: LoggerOptions): Logger {
     try {
       await current.end();
     } catch (error) {
-      degrade(error, 'logger-stream');
+      degrade(error, 'logger-stream', true);
     }
   }
 
   async function writeEntries(entries: LogEntry[], target: string): Promise<void> {
     if (unavailable) return;
     try {
+      // R7：回写降级后绕过长驻流，按批 appendFile 直写。
+      if (appendFallback) {
+        await fs.appendFile(target, entries.map((entry) => entry.line).join(''));
+        return;
+      }
       if (sink === undefined || sinkPath !== target) {
         // 首写或跨自然日：先结束旧写入口，再打开目标日期的入口。
         await endSink();
@@ -493,8 +520,8 @@ export function createLogger(options: LoggerOptions): Logger {
       }
       await sink.write(entries.map((entry) => entry.line).join(''));
     } catch (error) {
-      // 整批失败：丢弃本批并降级，不抛给调用方。
-      degrade(error, entries[0].event);
+      // 整批失败：降级（appendFile 也失败时才真正停止），不抛给调用方。
+      degrade(error, entries[0].event, true);
     }
   }
 
@@ -538,7 +565,7 @@ export function createLogger(options: LoggerOptions): Logger {
     bufferPath = path;
 
     // 回写路径即写即走；流式路径按批量阈值或定时器刷新。
-    if (openStream === undefined) {
+    if (openStream === undefined || appendFallback) {
       void flush();
       return;
     }
