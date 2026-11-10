@@ -405,34 +405,44 @@ export function ConfigurationApp() {
   const [autoScroll, setAutoScroll] = useState(true);
   const logTerminalRef = useRef<HTMLDivElement>(null);
 
-  // 挂载即经白名单桥读取配置
-  useEffect(() => {
+  // 挂载即经白名单桥读取配置；runLoad 同时供失败后的「重新加载」按钮复用。
+  const runLoad = useCallback(async (isCancelled: () => boolean): Promise<void> => {
     if (bridge === undefined) {
-      setLoadError('配置桥不可用：请从托盘菜单重新打开配置界面；若持续出现，请重启客户端。');
-      setPhase('failed');
+      if (!isCancelled()) {
+        setLoadError('配置桥不可用：请从托盘菜单重新打开配置界面；若持续出现，请重启客户端。');
+        setPhase('failed');
+      }
       return;
     }
 
-    let cancelled = false;
-    void (async () => {
-      try {
-        const config = await bridge.getConfig();
-        if (cancelled) return;
-        const next = toDraft(config);
-        setDraft(next);
-        setBaseline(next);
-        setPhase('ready');
-      } catch (error) {
-        if (cancelled) return;
-        setLoadError(`配置加载失败：${describeError(error)}`);
-        setPhase('failed');
-      }
-    })();
+    try {
+      const config = await bridge.getConfig();
+      if (isCancelled()) return;
+      const next = toDraft(config);
+      setDraft(next);
+      setBaseline(next);
+      setPhase('ready');
+    } catch (error) {
+      if (isCancelled()) return;
+      setLoadError(`配置加载失败：${describeError(error)}`);
+      setPhase('failed');
+    }
+  }, [bridge]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void runLoad(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, [bridge]);
+  }, [runLoad]);
+
+  // R13：加载失败不是终态——提供显式重试入口，不必关闭窗口重开。
+  const handleRetryLoad = useCallback(() => {
+    setLoadError(null);
+    setPhase('loading');
+    void runLoad(() => false);
+  }, [runLoad]);
 
   // 获取运行日志
   const fetchLogs = useCallback(async () => {
@@ -463,6 +473,9 @@ export function ConfigurationApp() {
     }
   }, [logs, activeTab, autoScroll]);
 
+  // R14：脏检查基于 JSON.stringify 全量比较，对键序敏感——toDraft 的键序
+  // 固定且 draft/baseline 同源（都经 toDraft 生成），同源比较稳定。恢复默认
+  // 值只改 draft 不动 baseline，因此恢复后仍处于「有未保存修改」状态。
   const dirty = useMemo(
     () => draft !== null && baseline !== null && JSON.stringify(draft) !== JSON.stringify(baseline),
     [draft, baseline],
@@ -639,6 +652,11 @@ export function ConfigurationApp() {
         <h1>系统参数配置</h1>
         <p role="alert" className="banner banner-error">
           {loadError}
+        </p>
+        <p className="field">
+          <button type="button" className="btn-secondary" onClick={handleRetryLoad}>
+            重新加载
+          </button>
         </p>
       </main>
     );

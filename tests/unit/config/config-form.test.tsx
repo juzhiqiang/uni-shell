@@ -281,6 +281,24 @@ describe('配置界面加载', () => {
     expect(document.body.textContent).toContain('配置桥不可用');
     expect(document.querySelector('form')).toBeNull();
   });
+
+  it('加载失败后可以重新加载，恢复后进入表单（R13）', async () => {
+    const getConfig = vi
+      .fn<(overrides?: unknown) => Promise<AppConfig>>()
+      .mockRejectedValueOnce(new Error('配置目录暂时不可用'))
+      .mockResolvedValueOnce(createConfig());
+    installBridge({ getConfig });
+
+    await renderApp();
+    expect(document.body.textContent).toContain('配置加载失败');
+    expect(document.querySelector('form')).toBeNull();
+
+    await clickButton('重新加载');
+
+    expect(getConfig).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('form')).not.toBeNull();
+    expect((field('targetUrl') as HTMLInputElement).value).toBe('https://erp.example.com');
+  });
 });
 
 describe('保存前校验', () => {
