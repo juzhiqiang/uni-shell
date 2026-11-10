@@ -30,11 +30,19 @@ export interface MainWindowChannel<W = BrowserWindow> {
 /**
  * 主窗口就绪通道：快捷键宿主窗口在延迟结束后才创建，需要延后绑定。
  * 同一窗口只绑定一次，重建窗口（关闭后再次创建）时重新绑定。
+ *
+ * R8：`onReady` 按 handler 维度去重（`boundHandlers`）——同一 handler 重复
+ * 注册只会绑定一次，避免 `before-input-event` 双触发；不同 handler 是各自
+ * 独立的订阅，由调用方（如 `installFocusedShortcut` 的 dispose）负责生命周期。
  */
 export function createMainWindowChannel<W extends TrackedWindow = BrowserWindow>(): MainWindowChannel<W> {
   const handlers: Array<(window: W) => void> = [];
   let current: W | null = null;
   let bound: W | null = null;
+  /** 已对当前窗口绑定过的 handler；换窗口时清空重新绑定。 */
+  const boundHandlers = new Set<(window: W) => void>();
+
+  const isUsable = (window: W): boolean => window.isDestroyed === undefined || !window.isDestroyed();
 
   return {
     get window() {
@@ -44,25 +52,27 @@ export function createMainWindowChannel<W extends TrackedWindow = BrowserWindow>
       current = window;
       if (window === null) {
         bound = null;
+        boundHandlers.clear();
       }
     },
     onReady(handler: (window: W) => void) {
       handlers.push(handler);
       // 窗口已存在时立即绑定，避免安装快捷键时窗口尚未创建。
-      if (current && (!current.isDestroyed || !current.isDestroyed())) {
-        if (bound === current) {
-          handler(current);
-        } else {
-          bound = current;
-          handler(current);
-        }
+      if (current !== null && isUsable(current) && !boundHandlers.has(handler)) {
+        boundHandlers.add(handler);
+        handler(current);
       }
     },
     emitReady(window: W) {
       current = window;
       if (bound === window) return;
       bound = window;
-      for (const handler of handlers) handler(window);
+      boundHandlers.clear();
+      for (const handler of handlers) {
+        if (boundHandlers.has(handler)) continue;
+        boundHandlers.add(handler);
+        handler(window);
+      }
     },
   };
 }

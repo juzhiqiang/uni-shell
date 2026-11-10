@@ -86,6 +86,30 @@ describe('shortcut-host', () => {
       expect(handler).toHaveBeenCalledTimes(2);
       expect(handler).toHaveBeenLastCalledWith(win2);
     });
+
+    it('同一 handler 重复注册只绑定一次（R8：避免 before-input-event 双触发）', () => {
+      const channel = createMainWindowChannel<TrackedWindow>();
+      const win = createMockWindow();
+      channel.emitReady(win);
+
+      const handler = vi.fn();
+      channel.onReady(handler);
+      channel.onReady(handler);
+
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('窗口存在前重复注册同一 handler，emitReady 时也只绑定一次', () => {
+      const channel = createMainWindowChannel<TrackedWindow>();
+      const handler = vi.fn();
+      channel.onReady(handler);
+      channel.onReady(handler);
+
+      const win = createMockWindow();
+      channel.emitReady(win);
+
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('createShortcutTarget', () => {
