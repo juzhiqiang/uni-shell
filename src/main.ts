@@ -34,8 +34,8 @@ import {
 } from './main/platform/electron-ports';
 import {
   acquireSingleInstance,
-  type SecondLaunchPayload,
 } from './main/instance/single-instance';
+import { createSecondLaunchInbox } from './main/instance/second-launch-inbox';
 import { createElectronLoginItemPort } from './main/startup/electron-login-item';
 import { createElectronTrayPort } from './main/tray/electron-tray-port';
 import { createMainWindowChannel, createShortcutTarget } from './main/tray/shortcut-host';
@@ -59,10 +59,12 @@ if (process.platform === 'win32') {
   app.setAppUserModelId(APP_USER_MODEL_ID);
 }
 
-let secondLaunchHandler: ((payload: SecondLaunchPayload) => void) | undefined;
+// 二次启动唤醒收件箱：单实例锁在模块加载时即注册回调，而控制器要到 bootstrap
+// 完成才就绪；这期间的唤醒请求先入收件箱，handler 就绪后补投递，不静默丢弃。
+const secondLaunchInbox = createSecondLaunchInbox();
 
 const isFirstInstance = acquireSingleInstance(
-  (payload) => secondLaunchHandler?.(payload),
+  (payload) => secondLaunchInbox.deliver(payload),
   { port: createElectronSingleInstancePort() },
 );
 
@@ -210,6 +212,9 @@ async function bootstrap(): Promise<void> {
   const windowPort = createWindowPortAdapter({ windowManager, configService, capabilities });
 
   let wasOnline = net.isOnline();
+  // R11：只认 false→true 上升沿——掉线不产生事件，由页面的 did-fail-load
+  // 驱动重试；恢复在线才唤醒可能处于退避等待的重试。非 running 或没有重试
+  // 周期时 reportNetworkOnline 是 no-op（控制器内部门控）。
   const onlinePollTimer = setInterval(() => {
     const online = net.isOnline();
     if (!wasOnline && online) {
@@ -258,9 +263,11 @@ async function bootstrap(): Promise<void> {
     log: logger,
   });
 
-  secondLaunchHandler = (payload) => {
+  secondLaunchInbox.setHandler((payload) => {
     void controller.handleSecondLaunch(payload);
-  };
+  });
+  // bootstrap 期间到达的唤醒请求在此补投递（R1：不得静默丢弃）。
+  secondLaunchInbox.drain();
 
   registerConfigIpc({
     host: ipcMain,
